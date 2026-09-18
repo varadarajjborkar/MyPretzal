@@ -30,7 +30,9 @@ import posthog from 'posthog-js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import pretzelSvg from '../style/icons/pretzel.svg';
 import { CHAT_SYSTEM_MESSAGE, chatAIStream } from './chatAIUtils';
+import { describeChatError } from './chatErrors';
 import { RendermimeMarkdown } from './components/rendermime-markdown';
+import { ChatModelPicker } from './components/ChatModelPicker';
 import { globalState } from './globalState';
 import { getDefaultSettings } from './migrations/defaultSettings';
 import { Embedding } from './prompt';
@@ -57,6 +59,8 @@ interface IMessage {
   role: 'user' | 'assistant' | 'system';
   // Name the user gave the chat. Kept on the chat's first message so chat_history.json stays a list of message lists
   chatTitle?: string;
+  // Reply that failed (the AI provider or model gave an error)
+  error?: boolean;
 }
 
 const initialMessage: IMessage[] = [{ id: '1', content: 'Hello, how can I assist you today?', role: 'assistant' }];
@@ -64,6 +68,17 @@ const isMac = /Mac/i.test(navigator.userAgent);
 const keyCombination = isMac ? 'Ctrl+Cmd+B' : 'Ctrl+Alt+B';
 const historyPrevKeyCombination = isMac ? '⇧⌘<' : '⇧^<';
 const historyNextKeyCombination = isMac ? '⇧⌘>' : '⇧^>';
+
+// Replies that are an error message rather than an answer ("ERROR: ..." is also how older code reports errors)
+const isErrorReply = (message?: IMessage): boolean =>
+  message?.role === 'assistant' &&
+  (!!message.error || (typeof message.content === 'string' && message.content.startsWith('ERROR: ')));
+
+// What the model is sent: failed replies, and the questions they were answering, are left out
+const withoutFailedReplies = (messages: IMessage[]): IMessage[] =>
+  messages.filter(
+    (message, i) => !isErrorReply(message) && !(message.role === 'user' && isErrorReply(messages[i + 1]))
+  );
 
 // Chats are saved next to the notebook, in .pretzel/chat_history.json
 const getChatHistoryPath = (notebookPath: string): string =>
@@ -179,6 +194,8 @@ interface IChatProps {
   posthogPromptTelemetry: boolean;
   themeManager: IThemeManager;
   pretzelSettingsJSON: ReturnType<typeof getDefaultSettings> | null;
+  // Saves the model picked in the chat as the AI Chat model
+  onChatModelChange?: (provider: string, model: string) => void;
 }
 
 export function Chat({
@@ -200,7 +217,8 @@ export function Chat({
   codeMatchThreshold,
   posthogPromptTelemetry,
   themeManager,
-  pretzelSettingsJSON
+  pretzelSettingsJSON,
+  onChatModelChange
 }: IChatProps): JSX.Element {
   // Saving settings (e.g. picking another model) rebuilds this panel: carry on with the chat that was open
   const [messages, setMessages] = useState<IMessage[]>(globalState.openChat?.messages ?? initialMessage);
@@ -221,6 +239,8 @@ export function Chat({
   const [editorValue, setEditorValue] = useState(globalState.openChat?.draft ?? '');
   const openChatRef = useRef({ messages, chatIndex, draft: editorValue });
   openChatRef.current = { messages, chatIndex, draft: editorValue };
+  // Set when a model is picked in the chat: the rebuilt panel puts the cursor back in the chat box
+  const focusInputAfterRebuildRef = useRef(false);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const [base64Images, setBase64Images] = useState<string[]>([]);
   const base64ImagesRef = useRef<string[]>([]);
@@ -329,7 +349,7 @@ export function Chat({
   useEffect(() => {
     // Remember the open chat for when the panel is rebuilt
     return () => {
-      globalState.openChat = openChatRef.current;
+      globalState.openChat = { ...openChatRef.current, focusInput: focusInputAfterRebuildRef.current };
     };
   }, []);
 
@@ -412,7 +432,12 @@ export function Chat({
     let selectedCode: string = '';
     if (notebookTracker && notebookTracker.currentWidget) {
       activeCellCode = notebookTracker?.activeCell?.model?.sharedModel?.source || '';
-      embeddings = await readEmbeddings(notebookTracker, app, aiClient, aiChatModelProvider);
+      try {
+        embeddings = await readEmbeddings(notebookTracker, app, aiClient, aiChatModelProvider);
+      } catch (error) {
+        // Similar cells are extra context: the question is still sent without them
+        console.error('Could not read the notebook embeddings:', error);
+      }
       selectedCode = getSelectedCode(notebookTracker).extractedCode;
     }
 
@@ -441,11 +466,15 @@ export function Chat({
           role: 'system',
           content: CHAT_SYSTEM_MESSAGE
         },
-        ...updatedMessages.map(msg => ({
+        ...withoutFailedReplies(updatedMessages).map(msg => ({
           role: msg.role,
           content: msg.content
         }))
       ];
+
+      const controller = new AbortController();
+      let signal = controller.signal;
+      setStopGeneration(() => () => controller.abort());
 
       (async () => {
         const topSimilarities = await getTopSimilarities(
@@ -457,10 +486,6 @@ export function Chat({
           'no-match-id',
           codeMatchThreshold
         );
-
-        const controller = new AbortController();
-        let signal = controller.signal;
-        setStopGeneration(() => () => controller.abort());
 
         await chatAIStream({
           aiChatModelProvider,
@@ -484,7 +509,7 @@ export function Chat({
           signal,
           notebookTracker
         });
-      })();
+      })().catch(error => showChatError(error, signal));
 
       return updatedMessages;
     });
@@ -526,17 +551,17 @@ export function Chat({
           role: 'system',
           content: CHAT_SYSTEM_MESSAGE
         },
-        ...updatedMessages.map(msg => ({
+        ...withoutFailedReplies(updatedMessages).map(msg => ({
           role: msg.role,
           content: msg.content
         }))
       ];
 
-      (async () => {
-        const controller = new AbortController();
-        let signal = controller.signal;
-        setStopGeneration(() => () => controller.abort());
+      const controller = new AbortController();
+      let signal = controller.signal;
+      setStopGeneration(() => () => controller.abort());
 
+      (async () => {
         await chatAIStream({
           aiChatModelProvider,
           aiChatModelString,
@@ -559,7 +584,7 @@ export function Chat({
           signal,
           notebookTracker
         });
-      })();
+      })().catch(error => showChatError(error, signal));
 
       return updatedMessages;
     });
@@ -567,6 +592,53 @@ export function Chat({
     setEditorValue('');
     setBase64Images([]); // Clear images after sending
   };
+
+  // A failed request says why in the chat, instead of staying on "Generating AI response..."
+  const showChatError = (error: any, signal: AbortSignal) => {
+    if (signal.aborted) {
+      return; // stopped with Cancel
+    }
+    console.error('AI chat request failed:', error);
+    const reason = describeChatError(error, aiChatModelProvider, aiChatModelString);
+    setMessages(prevMessages => {
+      const lastMessage = prevMessages[prevMessages.length - 1];
+      if (lastMessage.role === 'assistant') {
+        // Part of the reply came through before the error
+        return [
+          ...prevMessages.slice(0, -1),
+          { ...lastMessage, content: `${lastMessage.content}\n\nERROR: ${reason}`, error: true }
+        ];
+      }
+      return [
+        ...prevMessages,
+        {
+          id: String(prevMessages.length + 1),
+          role: 'assistant',
+          content: `ERROR: ${reason} Your message is back in the box below, so you can send it again.`,
+          error: true
+        }
+      ];
+    });
+    setReferenceSource('');
+    setIsAiGenerating(false);
+  };
+
+  useEffect(() => {
+    // When a reply fails before any of it arrives, put the question back in the box to send it again (e.g. with
+    // another model). Also after the panel is rebuilt for a model switch.
+    const lastMessage = messages[messages.length - 1];
+    const question = messages[messages.length - 2];
+    const failedBeforeAnswering =
+      isErrorReply(lastMessage) && (lastMessage.content as string).startsWith('ERROR: ') && question?.role === 'user';
+    if (!isAiGenerating && failedBeforeAnswering && !openChatRef.current.draft.trim()) {
+      const content: any = question.content;
+      const text = Array.isArray(content) ? content.find(item => item.type === 'text')?.text ?? '' : content;
+      setEditorValue(text.replace(/ {2}\n/g, '\n'));
+      if (Array.isArray(content)) {
+        setBase64Images(content.filter(item => item.type === 'image').map(item => item.data));
+      }
+    }
+  }, [isAiGenerating]);
 
   const cancelGeneration = () => {
     posthog.capture('prompt_chat cancel generation');
@@ -706,6 +778,10 @@ export function Chat({
   const handleEditorDidMount = useCallback(
     (editor: monaco.editor.IStandaloneCodeEditor, monaco: Monaco) => {
       editorRef.current = editor;
+      if (globalState.openChat?.focusInput) {
+        globalState.openChat.focusInput = false;
+        editor.focus();
+      }
       monaco.editor.setTheme(themeManager?.theme?.includes('Light') ? 'vs' : 'vs-dark');
 
       if (!globalState.isMonacoRegistered) {
@@ -844,7 +920,7 @@ export function Chat({
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <Box sx={{ flexGrow: 1, overflowY: 'auto', padding: 2 }}>
         {messages.map((message, index) => (
-          <Box key={`message-${index}`}>
+          <Box key={`message-${index}`} className={isErrorReply(message) ? 'pretzel-chat-error' : undefined}>
             {referenceSource && message.role === 'assistant' && messages[messages.length - 1].id === message.id && (
               <Box sx={{ display: 'flex', alignItems: 'center', marginTop: '8px', marginBottom: '2px' }}>
                 <Typography
@@ -1283,6 +1359,18 @@ export function Chat({
                   </div>
                 </div>
               )}
+              <ChatModelPicker
+                settings={pretzelSettingsJSON}
+                provider={aiChatModelProvider}
+                model={aiChatModelString}
+                onChange={(provider, model) => {
+                  focusInputAfterRebuildRef.current = true;
+                  posthog.capture('Chat Model Switched', { provider, model });
+                  onChatModelChange?.(provider, model);
+                }}
+                onOpenSettings={() => app.commands.execute('pretzelai:open-settings')}
+                onClosed={() => editorRef.current?.focus()}
+              />
             </Box>
           )}
         </Box>
