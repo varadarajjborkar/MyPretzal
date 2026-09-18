@@ -60,8 +60,24 @@ git add -A -f jupyterlab/static jupyterlab/schemas jupyterlab/themes jupyterlab/
 
 ## Feedback
 
-Questions, bugs or ideas: **borkarvaradaraj@gmail.com**
+Questions, bugs or ideas: [borkarvaradaraj@gmail.com](mailto:borkarvaradaraj@gmail.com)
 
-## Credits
+## Contributed to Pretzel
 
-Built on [Pretzel AI](https://github.com/pretzelai/pretzelai) by Pretzel AI GmbH (AGPL-3.0), which is built on [JupyterLab](https://github.com/jupyterlab/jupyterlab) (BSD-3-Clause). Pretzel's original README is in [PRETZEL_README.md](PRETZEL_README.md).
+This build is linked to my contributions to Pretzel. Each feature was also submitted to the original project as a pull request:
+
+- [#173](https://github.com/pretzelai/pretzelai/pull/173): Ollama Cloud support (Local / Cloud switch)
+- [#174](https://github.com/pretzelai/pretzelai/pull/174): recent chats list (open, rename, delete, New chat)
+- [#175](https://github.com/pretzelai/pretzelai/pull/175): model picker in the chat, and clear error messages
+
+This build also fixes Pretzel's extension manager for newer `httpx` versions.
+
+## Credits and licenses
+
+This is not my original project. It builds on the work of others, and full credit goes to them:
+
+- [**Pretzel AI**](https://github.com/pretzelai/pretzelai), by Pretzel AI GmbH (Prasoon Shukla and Ramon Garate Funcia). Pretzel's own code is under the GNU AGPL v3, see [LICENSE_AGPLv3](LICENSE_AGPLv3); its contributors are listed in [PRETZEL_CONTRIBUTORS](PRETZEL_CONTRIBUTORS).
+- [**JupyterLab**](https://github.com/jupyterlab/jupyterlab), by Project Jupyter. Its code is under the BSD 3-Clause license, see [LICENSE](LICENSE).
+- **My changes** are released under the same AGPL v3 license as Pretzel.
+
+The full git history is kept, so every original author's work stays credited. Pretzel's original README is in [PRETZEL_README.md](PRETZEL_README.md).
