@@ -198,6 +198,8 @@ ensured-targets = [
     "jupyterlab/themes/@jupyterlab/theme-light-extension/index.css",
 ]
 install-pre-commit-hook = true
+# The built app is committed on this branch, so pip can install it straight from git without Node.js
+skip-if-exists = ["jupyterlab/static/package.json"]
 
 [tool.hatch.build.hooks.jupyter-builder.editable-build-kwargs]
 build_cmd = "build"
