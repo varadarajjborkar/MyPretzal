@@ -94,6 +94,21 @@ const isSameMessage = (message: IMessage, other: IMessage): boolean =>
 const isSameChat = (chat?: IMessage[], other?: IMessage[]): boolean =>
   !!chat && !!other && chat.length === other.length && chat.every((message, i) => isSameMessage(message, other[i]));
 
+// Which saved chat the open conversation is (it may have gone on since it was saved), or chats.length if none
+const findOpenChat = (chats: IMessage[][], messages: IMessage[]): number => {
+  let found = chats.length;
+  chats.forEach((chat, i) => {
+    const isStartOfOpenChat =
+      chat.length > 1 &&
+      chat.length <= messages.length &&
+      chat.every((message, j) => isSameMessage(message, messages[j]));
+    if (isStartOfOpenChat && (found === chats.length || chat.length >= chats[found].length)) {
+      found = i;
+    }
+  });
+  return found;
+};
+
 // Text box for renaming a chat in the history menu. Enter or clicking away saves, Esc cancels
 function ChatNameInput({
   initialName,
@@ -187,10 +202,11 @@ export function Chat({
   themeManager,
   pretzelSettingsJSON
 }: IChatProps): JSX.Element {
-  const [messages, setMessages] = useState(initialMessage);
+  // Saving settings (e.g. picking another model) rebuilds this panel: carry on with the chat that was open
+  const [messages, setMessages] = useState<IMessage[]>(globalState.openChat?.messages ?? initialMessage);
   const [chatHistory, setChatHistory] = useState<IMessage[][]>([]);
   // Position of the open chat in chatHistory; chatHistory.length means a new chat that isn't saved yet
-  const [chatIndex, setChatIndex] = useState(0);
+  const [chatIndex, setChatIndex] = useState(globalState.openChat?.chatIndex ?? 0);
   const [historyMenuAnchor, setHistoryMenuAnchor] = useState<HTMLElement | null>(null);
   // Chat in the history menu that is being renamed, or waiting for the user to confirm its deletion
   const [historyMenuAction, setHistoryMenuAction] = useState<{ type: 'rename' | 'delete'; index: number } | null>(null);
@@ -202,7 +218,9 @@ export function Chat({
   const [referenceSource, setReferenceSource] = useState('');
   const [stopGeneration, setStopGeneration] = useState<() => void>(() => () => {});
   const messagesEndRef = useRef<null | HTMLDivElement>(null);
-  const [editorValue, setEditorValue] = useState('');
+  const [editorValue, setEditorValue] = useState(globalState.openChat?.draft ?? '');
+  const openChatRef = useRef({ messages, chatIndex, draft: editorValue });
+  openChatRef.current = { messages, chatIndex, draft: editorValue };
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const [base64Images, setBase64Images] = useState<string[]>([]);
   const base64ImagesRef = useRef<string[]>([]);
@@ -241,7 +259,8 @@ export function Chat({
         const file = await app.serviceManager.contents.get(chatHistoryPath);
         const chatHistoryJson = JSON.parse(file.content);
         setChatHistory(chatHistoryJson);
-        setChatIndex(chatHistoryJson.length);
+        // Keep saving the open chat in its place if it is one of this folder's chats (else it's saved as a new one)
+        setChatIndex(findOpenChat(chatHistoryJson, openChatRef.current.messages));
       } else {
         // No chats saved in this notebook's folder yet
         setChatHistory([]);
@@ -306,6 +325,13 @@ export function Chat({
       }
     }
   };
+
+  useEffect(() => {
+    // Remember the open chat for when the panel is rebuilt
+    return () => {
+      globalState.openChat = openChatRef.current;
+    };
+  }, []);
 
   useEffect(() => {
     // Load chat history
@@ -1022,16 +1048,6 @@ export function Chat({
                   Submit without context: <strong>{isMac ? 'Option' : 'Alt'}+Enter</strong>
                 </div>
               </div>
-              <div className="clear-button-container">
-                <button className="pretzelInputSubmitButton" onClick={clearChat} title="Clear (Esc)">
-                  Clear <span style={{ fontSize: '0.8em' }}>{isMac ? '⌘' : '^'}Esc</span>
-                </button>
-                <div className="tooltip">
-                  Start a new chat. Previous chat will be saved.
-                  <br />
-                  Shortcut: <strong>{isMac ? 'Cmd+Esc' : 'Ctrl+Esc'}</strong>
-                </div>
-              </div>
               <div className="history-button-container">
                 <button
                   className="pretzelInputSubmitButton"
@@ -1048,6 +1064,8 @@ export function Chat({
                   {chatIndex < chatHistory.length
                     ? `Chat ${chatIndex + 1} of ${chatHistory.length}`
                     : `New chat · ${chatHistory.length} saved`}
+                  <br />
+                  New chat: <strong>{isMac ? 'Cmd+Esc' : 'Ctrl+Esc'}</strong>
                   <br />
                   Previous / next chat: <strong>{historyPrevKeyCombination}</strong> /{' '}
                   <strong>{historyNextKeyCombination}</strong>
