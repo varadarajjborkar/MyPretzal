@@ -18,8 +18,9 @@ import { ServerConnection } from '@jupyterlab/services';
 import { LabIcon } from '@jupyterlab/ui-components';
 import MistralClient from '@mistralai/mistralai';
 import { Editor, loader, Monaco } from '@monaco-editor/react';
+import HistoryIcon from '@mui/icons-material/History';
 import UploadIcon from '@mui/icons-material/Upload';
-import { Box, Typography } from '@mui/material';
+import { Box, ListSubheader, Menu, MenuItem, Typography } from '@mui/material';
 import * as monaco from 'monaco-editor';
 import { OpenAI } from 'openai';
 import posthog from 'posthog-js';
@@ -58,6 +59,13 @@ const isMac = /Mac/i.test(navigator.userAgent);
 const keyCombination = isMac ? 'Ctrl+Cmd+B' : 'Ctrl+Alt+B';
 const historyPrevKeyCombination = isMac ? '⇧⌘<' : '⇧^<';
 const historyNextKeyCombination = isMac ? '⇧⌘>' : '⇧^>';
+
+// Title for a saved chat in the history menu: the first thing the user asked
+const getChatTitle = (chat: IMessage[]): string => {
+  const content: any = chat.find(message => message.role === 'user')?.content ?? '';
+  const text = Array.isArray(content) ? content.find(item => item.type === 'text')?.text ?? '' : content;
+  return text.replace(/\s+/g, ' ').trim() || 'Untitled chat';
+};
 
 interface IChatProps {
   aiChatModelProvider: string;
@@ -104,7 +112,9 @@ export function Chat({
 }: IChatProps): JSX.Element {
   const [messages, setMessages] = useState(initialMessage);
   const [chatHistory, setChatHistory] = useState<IMessage[][]>([]);
-  const [, setChatIndex] = useState(0);
+  // Position of the open chat in chatHistory; chatHistory.length means a new chat that isn't saved yet
+  const [chatIndex, setChatIndex] = useState(0);
+  const [historyMenuAnchor, setHistoryMenuAnchor] = useState<HTMLElement | null>(null);
   const clearChatRef = useRef<() => void>(() => {});
   const chatHistoryRef = useRef<IMessage[][]>([]);
   const [isAiGenerating, setIsAiGenerating] = useState(false);
@@ -153,12 +163,17 @@ export function Chat({
         const chatHistoryJson = JSON.parse(file.content);
         setChatHistory(chatHistoryJson);
         setChatIndex(chatHistoryJson.length);
+      } else {
+        // No chats saved in this notebook's folder yet
+        setChatHistory([]);
+        setChatIndex(0);
       }
     }
   };
 
   const saveMessages = async () => {
-    if (!notebookTracker) return;
+    // Nothing to save until the user has sent a message
+    if (!notebookTracker || messages.length <= 1) return;
     const notebook = notebookTracker.currentWidget;
     if (notebook?.model && !isAiGenerating) {
       const currentNotebookPath = notebook.context.path;
@@ -176,40 +191,38 @@ export function Chat({
         const file = await app.serviceManager.contents.get(chatHistoryPath);
         try {
           const chatHistoryJson = JSON.parse(file.content);
-          if (chatHistoryJson.length > 0) {
-            let lastChat: IMessage[] = chatHistoryJson[chatHistoryJson.length - 1];
-            if (
-              lastChat.every(m => messages.some(m2 => m2.content === m.content && m2.role === m.role && m2.id === m.id))
-            ) {
-              chatHistoryJson[chatHistoryJson.length - 1] = messages;
-            } else {
-              chatHistoryJson.push(messages);
-            }
-          } else {
-            chatHistoryJson.push(messages);
+          const isContinuationOf = (chat?: IMessage[]) =>
+            !!chat &&
+            chat.every(m => messages.some(m2 => m2.content === m.content && m2.role === m.role && m2.id === m.id));
+          // Update the chat in place if it was opened from history (or is the latest chat) and continued,
+          // otherwise save it as a new chat
+          let savedIndex = chatHistoryJson.length;
+          if (isContinuationOf(chatHistoryJson[chatIndex])) {
+            savedIndex = chatIndex;
+          } else if (isContinuationOf(chatHistoryJson[chatHistoryJson.length - 1])) {
+            savedIndex = chatHistoryJson.length - 1;
           }
-          if (messages.length > 1) {
-            await app.serviceManager.contents.save(chatHistoryPath, {
-              type: 'file',
-              format: 'text',
-              content: JSON.stringify(chatHistoryJson)
-            });
-          }
+          chatHistoryJson[savedIndex] = messages;
+          await app.serviceManager.contents.save(chatHistoryPath, {
+            type: 'file',
+            format: 'text',
+            content: JSON.stringify(chatHistoryJson)
+          });
           setChatHistory(chatHistoryJson);
-          setChatIndex(chatHistoryJson.length - 1);
+          setChatIndex(savedIndex);
         } catch (error) {
           console.error('Error parsing chat history JSON:', error);
         }
       } else {
         // create chat_history.json
-        const messagesToSave = messages.length > 1 ? [messages] : [];
+        const messagesToSave = [messages];
         app.serviceManager.contents.save(chatHistoryPath, {
           type: 'file',
           format: 'text',
           content: JSON.stringify(messagesToSave)
         });
         setChatHistory(messagesToSave);
-        setChatIndex(messagesToSave.length);
+        setChatIndex(0);
       }
     }
   };
@@ -506,6 +519,14 @@ export function Chat({
       return prevIndex;
     });
   }, []);
+
+  const openChatFromHistory = (index: number) => {
+    setHistoryMenuAnchor(null);
+    setMessages(chatHistory[index]);
+    setChatIndex(index);
+    posthog.capture('Chat History Restored', { method: 'menu' });
+    editorRef.current?.focus();
+  };
 
   const handleEditorDidMount = useCallback(
     (editor: monaco.editor.IStandaloneCodeEditor, monaco: Monaco) => {
@@ -862,43 +883,74 @@ export function Chat({
                   Shortcut: <strong>{isMac ? 'Cmd+Esc' : 'Ctrl+Esc'}</strong>
                 </div>
               </div>
-              <div className="history-prev-button-container">
+              <div className="history-button-container">
                 <button
                   className="pretzelInputSubmitButton"
-                  onClick={() => restoreChat(-1)}
-                  title={`Previous (${historyPrevKeyCombination})`}
+                  onClick={e => setHistoryMenuAnchor(e.currentTarget)}
+                  title="Chat history"
+                  aria-label="Chat history"
                 >
-                  {'<'}
+                  <HistoryIcon />
                 </button>
                 <div className="tooltip">
-                  Navigate to the previous chat in history
+                  {chatIndex < chatHistory.length
+                    ? `Chat ${chatIndex + 1} of ${chatHistory.length}`
+                    : `New chat · ${chatHistory.length} saved`}
                   <br />
-                  Shortcut: <strong>{historyPrevKeyCombination}</strong>
+                  Previous / next chat: <strong>{historyPrevKeyCombination}</strong> /{' '}
+                  <strong>{historyNextKeyCombination}</strong>
                 </div>
               </div>
-              <Typography
-                sx={{
-                  marginRight: 'var(--jp-ui-margin, 10px)',
-                  marginTop: 'var(--jp-ui-margin, 10px)',
-                  fontSize: '0.885rem'
+              <Menu
+                anchorEl={historyMenuAnchor}
+                open={!!historyMenuAnchor}
+                onClose={() => {
+                  setHistoryMenuAnchor(null);
+                  editorRef.current?.focus();
                 }}
+                anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
+                transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+                PaperProps={{
+                  sx: {
+                    width: 320,
+                    maxHeight: 400,
+                    backgroundColor: 'var(--jp-layout-color1)',
+                    color: 'var(--jp-ui-font-color1)',
+                    border: '1px solid var(--jp-border-color1)'
+                  }
+                }}
+                MenuListProps={{ dense: true }}
               >
-                History
-              </Typography>
-              <div className="history-next-button-container">
-                <button
-                  className="pretzelInputSubmitButton"
-                  onClick={() => restoreChat(1)}
-                  title={`Next (${historyNextKeyCombination})`}
+                <ListSubheader
+                  style={{ backgroundColor: 'var(--jp-layout-color1)', color: 'var(--jp-ui-font-color2)' }}
                 >
-                  {'>'}
-                </button>
-                <div className="tooltip">
-                  Navigate to the next chat in history
-                  <br />
-                  Shortcut: <strong>{historyNextKeyCombination}</strong>
-                </div>
-              </div>
+                  Recent chats ({chatHistory.length})
+                </ListSubheader>
+                {chatHistory.length === 0 && <MenuItem disabled>Your chats will show up here.</MenuItem>}
+                {chatHistory
+                  .map((chat, index) => ({ chat, index }))
+                  .reverse()
+                  .map(({ chat, index }) => (
+                    <MenuItem
+                      key={index}
+                      selected={index === chatIndex}
+                      onClick={() => openChatFromHistory(index)}
+                      sx={{
+                        display: 'block',
+                        color: 'var(--jp-ui-font-color1)',
+                        '&:hover': { backgroundColor: 'var(--jp-layout-color2)' }
+                      }}
+                    >
+                      <Typography noWrap sx={{ fontSize: '0.875rem', color: 'inherit' }}>
+                        {getChatTitle(chat)}
+                      </Typography>
+                      <Typography sx={{ fontSize: '0.75rem', color: 'inherit', opacity: 0.75 }}>
+                        Chat {index + 1} · {chat.length - 1} {chat.length === 2 ? 'message' : 'messages'}
+                        {index === chatIndex ? ' · open now' : ''}
+                      </Typography>
+                    </MenuItem>
+                  ))}
+              </Menu>
               {canBeUsedForImages && (
                 <div className="upload-image-button-container">
                   <input
