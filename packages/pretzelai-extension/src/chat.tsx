@@ -18,6 +18,7 @@ import { ServerConnection } from '@jupyterlab/services';
 import { LabIcon } from '@jupyterlab/ui-components';
 import MistralClient from '@mistralai/mistralai';
 import { Editor, loader, Monaco } from '@monaco-editor/react';
+import AddIcon from '@mui/icons-material/Add';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import HistoryIcon from '@mui/icons-material/History';
@@ -604,7 +605,6 @@ export function Chat({
     setMessages(chatHistory[index]);
     setChatIndex(index);
     posthog.capture('Chat History Restored', { method: 'menu' });
-    editorRef.current?.focus();
   };
 
   // Changes one saved chat in chat_history.json and returns the saved chats. The file is read again first,
@@ -1035,7 +1035,10 @@ export function Chat({
               <div className="history-button-container">
                 <button
                   className="pretzelInputSubmitButton"
-                  onClick={e => setHistoryMenuAnchor(e.currentTarget)}
+                  onClick={e => {
+                    setHistoryMenuAction(null);
+                    setHistoryMenuAnchor(e.currentTarget);
+                  }}
                   title="Chat history"
                   aria-label="Chat history"
                 >
@@ -1053,11 +1056,10 @@ export function Chat({
               <Menu
                 anchorEl={historyMenuAnchor}
                 open={!!historyMenuAnchor}
-                onClose={() => {
-                  setHistoryMenuAnchor(null);
-                  setHistoryMenuAction(null);
-                  editorRef.current?.focus();
-                }}
+                onClose={() => setHistoryMenuAnchor(null)}
+                // Back to typing once the menu is gone (focus can't leave the menu while it's open)
+                disableRestoreFocus
+                TransitionProps={{ onExited: () => editorRef.current?.focus() }}
                 anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
                 transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
                 PaperProps={{
@@ -1071,6 +1073,25 @@ export function Chat({
                 }}
                 MenuListProps={{ dense: true }}
               >
+                <MenuItem
+                  className="chat-history-new"
+                  selected={chatIndex >= chatHistory.length}
+                  onClick={() => {
+                    setHistoryMenuAnchor(null);
+                    clearChat();
+                  }}
+                  sx={{
+                    gap: 1,
+                    color: 'var(--jp-ui-font-color1)',
+                    '&:hover': { backgroundColor: 'var(--jp-layout-color2)' }
+                  }}
+                >
+                  <AddIcon fontSize="small" sx={{ color: 'inherit' }} />
+                  <Typography sx={{ fontSize: '0.875rem', color: 'inherit', flexGrow: 1 }}>New chat</Typography>
+                  <Typography sx={{ fontSize: '0.75rem', color: 'inherit', opacity: 0.75 }}>
+                    {isMac ? '⌘Esc' : 'Ctrl+Esc'}
+                  </Typography>
+                </MenuItem>
                 <ListSubheader
                   style={{ backgroundColor: 'var(--jp-layout-color1)', color: 'var(--jp-ui-font-color2)' }}
                 >
