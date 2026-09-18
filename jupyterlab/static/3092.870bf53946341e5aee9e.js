@@ -1,0 +1,2 @@
+"use strict";(self["webpackChunk_jupyterlab_application_top"]=self["webpackChunk_jupyterlab_application_top"]||[]).push([[3092],{43092:(e,t)=>{var n=function(){if(typeof self!=="undefined"){return self}if(typeof window!=="undefined"){return window}if(typeof f!=="undefined"){return f}throw new Error("unable to locate global object")};var f=n();e.exports=t=f.fetch;if(f.fetch){t["default"]=f.fetch.bind(f)}t.Headers=f.Headers;t.Request=f.Request;t.Response=f.Response}}]);
+//# sourceMappingURL=3092.870bf53946341e5aee9e.js.map?v=870bf53946341e5aee9e
