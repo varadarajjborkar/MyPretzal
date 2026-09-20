@@ -21,19 +21,15 @@ This repo is private, so run `gh auth login` and `gh auth setup-git` once first,
 
 ### If the install looks frozen
 
-It goes quiet for a few minutes. pip only draws a progress bar when it downloads one ready-made file of a known size, which isn't what happens here: it copies this whole repo with git, silencing git on purpose with `--quiet`, and then builds the package.
+It is working. pip draws its green progress bar only when it downloads one finished file whose size it knows in advance. Installing from a git link is not that: pip copies this whole repo with git and then builds the package, and neither step has a total to count towards. So you get pip's spinner lines and a few quiet minutes.
 
-To have it report progress from then on, without typing anything extra, make this file once:
+For a quick, tidy install, install the built file instead. Build it once (see *Rebuild after changing the code*, then `pip wheel --no-deps .`), keep the `.whl` somewhere handy, and:
 
 ```bash
-mkdir -p ~/.config/pip
-cat > ~/.config/pip/pip.conf <<'EOF'
-[install]
-verbose = 2
-EOF
+pip install ~/pretzel-dist/pretzelai-4.2.11-py3-none-any.whl
 ```
 
-pip then runs git with `--progress` instead, so you see `Receiving objects: 47%` and each build step. This applies to every `pip install`, so other packages get chattier too. Delete the file to go back.
+That takes seconds and prints the familiar `Installing collected packages` / `Successfully installed`, because there is nothing to clone or build.
 
 ## Run
 
