@@ -7,6 +7,8 @@ Jupyter notebooks with AI built in. It's based on [Pretzel AI](https://github.co
 - **Model picker:** switch the AI model from the chat. The conversation carries on with the new model.
 - **Clear errors:** if a model or API key fails, the chat says why instead of hanging.
 - **Web search:** the AI can search the web and read pages before answering, instead of guessing from memory.
+- **Notebook access:** the AI can read your cells, edit them, add them and run them — and it knows a notebook is stateful, so it can tell you when a cell has been edited since it ran.
+- **Knows your environment:** it reads the Python version and packages of the kernel you are actually using, and offers to install what's missing instead of rewriting your code forever.
 
 ## Install
 
@@ -43,15 +45,41 @@ pretzel lab
 - **Open the chat:** `Ctrl+Cmd+B` on Mac, `Ctrl+Alt+B` elsewhere.
 - **Set up models and keys:** in **Settings → Pretzel AI Settings**.
 
-## Web search
+## What the AI can do
 
-The **Web** button at the bottom of the chat lets the AI look things up before answering. With it on, the AI can search the web and read pages, as many times as a question needs, and the chat shows each step as it happens.
+The **Tools** button at the bottom of the chat decides what the AI may reach for. Three groups, each on or off:
 
-- **It needs an Ollama model that supports tool calling**, such as `gpt-oss` or `qwen3`. With a model that can't, the chat says so rather than answering from memory. Other providers aren't wired up yet.
-- **Searching is free and needs no account.** It uses DuckDuckGo. A paid search key (Tavily or Parallel) can be used instead, and is only worth it if the free results get thin.
-- **Choose how tools run** in the same menu: *Let it run* does the searching by itself, *Ask me first* waits for Allow or Skip on every call.
-- The steps stay in the saved chat, so you can see later where an answer came from. Answers end with the URLs used.
-- Only public web addresses can be read. Anything on this machine or the local network is refused, so a web page can't talk the AI into fetching your own services.
+- **Read and change this notebook** *(on by default)* — list the cells, read one in full with its output, rewrite a cell, add or delete one, and run cells. It is told what the kernel currently holds: which cells have run, in what order, and which have been edited since they last ran, so it doesn't assume your file and your kernel agree.
+- **Look at the environment and install packages** *(on by default)* — the Python version, where it lives, what is installed and at what version, and what is already imported. If a package is missing here but installed under another Python on your machine, it says so. Installing runs `pip` in the kernel's own environment.
+- **Search the web when needed** *(off by default)* — search and read pages, as many times as a question needs. It uses DuckDuckGo, GitHub, PyPI, Stack Overflow and Wikipedia, choosing whichever can actually answer. Off by default because it goes out to other people's servers and takes seconds.
+
+**Before it acts**, in the same menu:
+
+- *Let it run* — no interruptions.
+- *Ask before it changes anything* **(default)** — it reads freely, but editing a cell, running code or installing waits for **Allow** or **Skip**.
+- *Ask before every step* — every call waits.
+
+**Installing a package always asks**, whichever of those you pick, because it changes your machine outside the notebook.
+
+It needs an Ollama model that can call tools, such as `gpt-oss` or `qwen3`. With a model that can't, the chat quietly answers without them and the Tools menu says which model it was. Other providers aren't wired up yet.
+
+Every step appears in the chat as it happens and stays in the saved conversation, so you can see later what it did. Answers that used the web end with the URLs.
+
+Only public web addresses can be read. Anything on this machine or the local network is refused, so a web page can't talk the AI into fetching your own services.
+
+## When something is missing, not broken
+
+Click **Fix Error with AI** on a cell that failed with `ModuleNotFoundError` and you get an offer to install the package, not another rewrite — with the exact Python it looked in, and the right package name (`cv2` offers `opencv-python`). Say *No, fix the code instead* and it goes to the model as before.
+
+The same offer comes up from **Cmd+K** in a cell whose imports don't resolve, before any code is written, with *Write the code anyway* if you meant it. In the chat, installing is a tool call that always waits for **Allow**. Nothing is ever installed without you clicking.
+
+This is there because no rewrite of an import statement has ever installed anything, and asking a model to fix the same error twice gets you the same wrong answer twice. If you do go round again, the fixer is told which attempt this is and asked to name what it now thinks is really wrong.
+
+## Things Jupyter can't show
+
+Some libraries open a window on your desktop rather than drawing in the notebook — `gymnasium` with `render_mode="human"`, `cv2.imshow`, `pygame.display`, matplotlib with a desktop backend. In a notebook that window either appears somewhere you aren't looking or freezes the cell, and if your kernel is on another machine it never appears at all.
+
+The AI is told this, and told the inline alternative for each of them, so it should offer you `render_mode="rgb_array"` and a frame display rather than code that silently does nothing.
 
 ## Update
 
@@ -123,6 +151,14 @@ git add -A -f jupyterlab/static jupyterlab/schemas jupyterlab/themes jupyterlab/
 ```
 
 Don't skip the `node yarn.js install` line. The build reads a *copy* of the extension inside `jupyterlab/staging/node_modules`, and that step is what refreshes it. Without it the build quietly packages the old code, and `git status` shows nothing changed.
+
+### Testing against a checkout
+
+`--dev-mode` is the quick way to try a change, but it loads **no prebuilt extensions at all** — no ipywidgets, no VPython, no plotly renderer. Nothing warns you; those libraries simply produce no output. To test anything involving them, point at the built app instead:
+
+```bash
+jupyter lab --app-dir=/path/to/pretzelai/jupyterlab
+```
 
 ## Feedback
 
