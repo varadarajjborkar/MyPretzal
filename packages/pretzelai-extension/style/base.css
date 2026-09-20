@@ -26,6 +26,25 @@
   z-index: 1000;
 }
 
+/* The button is a child of the cell toolbar, so it hides exactly when the toolbar hides, but it is
+   positioned outside the toolbar's own box: JupyterLab hides the toolbar when it would cover more
+   than half the cell, and counting this button's width there made the toolbar vanish for good in a
+   narrow notebook (a laptop screen with the chat panel open). Sitting alongside costs no width. */
+.jp-cell-toolbar .ask-ai-button-container {
+  position: absolute;
+  top: 0;
+  right: 100%;
+  display: flex;
+  align-items: center;
+  height: 100%;
+  margin-right: 2px;
+}
+
+/* If the button could not be placed in the toolbar, it at least disappears when the toolbar does */
+.jp-toolbar-overlap .ask-ai-button-container {
+  display: none;
+}
+
 .ask-ai-button {
   background-color: var(--jp-brand-color1);
   color: var(--jp-ui-inverse-font-color1);

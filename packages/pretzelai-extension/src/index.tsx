@@ -552,6 +552,40 @@ const extension: JupyterFrontEndPlugin<void> = {
       };
     }
 
+    /**
+     * Put the Ask AI button inside the cell's own toolbar, next to the other cell buttons.
+     *
+     * JupyterLab hides that toolbar as soon as the cell's content reaches its left edge, and it
+     * measures that edge from the toolbar element. A button sitting outside the toolbar is neither
+     * measured nor hidden, which is why Ask AI used to stay put while the rest disappeared, with
+     * the code running underneath it. As a child of the toolbar it is measured and hidden with
+     * the rest. The toolbar is built asynchronously for a new cell, so if it isn't there yet the
+     * button waits for it rather than being left behind.
+     */
+    function placeAskAIButton(cellNode: HTMLElement, buttonContainer: HTMLElement) {
+      const toolbar = cellNode.querySelector('.jp-cell-toolbar');
+      if (toolbar) {
+        // First child: keeps its usual place, to the left of the toolbar's icons
+        toolbar.insertBefore(buttonContainer, toolbar.firstChild);
+        return;
+      }
+
+      cellNode.appendChild(buttonContainer);
+      const observer = new MutationObserver(() => {
+        if (!buttonContainer.isConnected) {
+          observer.disconnect(); // the cell was left before its toolbar appeared
+          return;
+        }
+        const cellToolbar = cellNode.querySelector('.jp-cell-toolbar');
+        if (cellToolbar) {
+          cellToolbar.insertBefore(buttonContainer, cellToolbar.firstChild);
+          observer.disconnect();
+        }
+      });
+      observer.observe(cellNode, { childList: true, subtree: true });
+      setTimeout(() => observer.disconnect(), 5000);
+    }
+
     function addAskAIButton(cellNode: HTMLElement) {
       // Remove existing buttons and spinners from all cells before adding a new one
       document.querySelectorAll('.ask-ai-button-container, .loading-spinner').forEach(element => {
@@ -577,7 +611,7 @@ const extension: JupyterFrontEndPlugin<void> = {
       tooltip.className = 'tooltip';
       tooltip.textContent = `Open the prompt box to instruct AI (${shortcutText})`;
       buttonContainer.appendChild(tooltip); // Append tooltip to buttonContainer
-      cellNode.appendChild(buttonContainer); // Append buttonContainer to cellNode
+      placeAskAIButton(cellNode, buttonContainer);
 
       button.onclick = () => {
         posthog.capture('Ask AI', {
