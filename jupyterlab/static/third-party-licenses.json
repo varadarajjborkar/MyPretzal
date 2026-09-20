@@ -326,7 +326,7 @@
     },
     {
       "name": "@jupyterlab/cell-toolbar",
-      "versionInfo": "4.2.5",
+      "versionInfo": "4.2.0",
       "licenseId": "BSD-3-Clause",
       "extractedText": ""
     },
