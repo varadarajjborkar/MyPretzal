@@ -192,6 +192,12 @@ export interface INotebookToolOptions {
   runTimeoutMs?: number;
 }
 
+/** Where an insert will actually land, so the label and the action agree. */
+const insertPosition = (index: any, count: number): number => {
+  const wanted = Number(index);
+  return Number.isInteger(wanted) ? Math.max(0, Math.min(wanted, count)) : count;
+};
+
 export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INotebookToolOptions): IAgentTool[] {
   const overview: IAgentTool = {
     name: 'notebook_overview',
@@ -312,8 +318,13 @@ export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INoteboo
     },
     label: args => {
       const kind = args?.cell_type === 'markdown' ? 'markdown' : 'code';
-      const what = String(args?.source ?? '').trim() ? '' : 'empty ';
-      return `Adding an ${what}${kind} cell at ${args?.index}`;
+      const what = String(args?.source ?? '').trim() ? 'a ' : 'an empty ';
+      // The approval prompt has to say where it will really go: a model that asks for -1 is
+      // asking for the top, and the user should be told that, not "-1"
+      const count = tracker?.currentWidget?.content.widgets.length ?? 0;
+      const position = insertPosition(args?.index, count);
+      const where = position >= count ? 'at the end' : `at position ${position}`;
+      return `Adding ${what}${kind} cell ${where}`;
     },
     run: async args => {
       const panel = panelOf(tracker);
@@ -322,9 +333,7 @@ export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INoteboo
         throw new Error('That notebook has no model, so it cannot be changed.');
       }
       const count = panel.content.widgets.length;
-      // A model that leaves the position out, or sends nonsense, means "at the end"
-      const wanted = Number(args?.index);
-      const position = Number.isInteger(wanted) ? Math.max(0, Math.min(wanted, count)) : count;
+      const position = insertPosition(args?.index, count);
       const type = args?.cell_type === 'markdown' ? 'markdown' : 'code';
       model.sharedModel.insertCell(position, {
         // eslint-disable-next-line camelcase

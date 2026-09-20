@@ -19,6 +19,7 @@
 /** Python, versions, and the loops that come from guessing about them. */
 export const ENVIRONMENT_GUIDANCE = `Environment and versions:
 - A failed import is a fact about this machine, not a bug in the code. Never rewrite working code to get around a missing package: find out what is installed, then say what is missing.
+- Before writing code that imports a library you have not already seen in this environment, check that it is there. The check costs a second; a ModuleNotFoundError after the fact costs the user a great deal more.
 - Check versions before you rely on them. "It works in the docs" and "it works here" are different claims, and the second one is the one the user needs.
 - If the same error comes back after your fix, stop fixing. Say what you now believe is actually wrong, name the versions involved, and ask the user — two attempts at one error is the limit. Repeating a fix that already failed wastes their time and teaches them nothing.
 - Version mismatches are worth naming out loud: a package with no wheel for this Python, a release that expects something removed from its dependencies, two libraries pinned against each other. \`pkg_resources\` is the common one — setuptools 81 removed it, so a library still importing it needs either \`setuptools<81\` or a newer release of that library.
