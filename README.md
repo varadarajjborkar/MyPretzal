@@ -6,6 +6,7 @@ Jupyter notebooks with AI built in. It's based on [Pretzel AI](https://github.co
 - **Recent chats:** open, rename and delete past chats, or start a new one, from the clock button in the chat.
 - **Model picker:** switch the AI model from the chat. The conversation carries on with the new model.
 - **Clear errors:** if a model or API key fails, the chat says why instead of hanging.
+- **Web search:** the AI can search the web and read pages before answering, instead of guessing from memory.
 
 ## Install
 
@@ -41,6 +42,16 @@ pretzel lab
 
 - **Open the chat:** `Ctrl+Cmd+B` on Mac, `Ctrl+Alt+B` elsewhere.
 - **Set up models and keys:** in **Settings → Pretzel AI Settings**.
+
+## Web search
+
+The **Web** button at the bottom of the chat lets the AI look things up before answering. With it on, the AI can search the web and read pages, as many times as a question needs, and the chat shows each step as it happens.
+
+- **It needs an Ollama model that supports tool calling**, such as `gpt-oss` or `qwen3`. With a model that can't, the chat says so rather than answering from memory. Other providers aren't wired up yet.
+- **Searching is free and needs no account.** It uses DuckDuckGo. A paid search key (Tavily or Parallel) can be used instead, and is only worth it if the free results get thin.
+- **Choose how tools run** in the same menu: *Let it run* does the searching by itself, *Ask me first* waits for Allow or Skip on every call.
+- The steps stay in the saved chat, so you can see later where an answer came from. Answers end with the URLs used.
+- Only public web addresses can be read. Anything on this machine or the local network is refused, so a web page can't talk the AI into fetching your own services.
 
 ## Update
 
