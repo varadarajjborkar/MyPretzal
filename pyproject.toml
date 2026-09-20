@@ -281,6 +281,9 @@ lint.ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
+# S603 subprocess call: the agent reads the GitHub token by running the gh CLI, found on PATH,
+# with fixed arguments and no user input
+"jupyterlab/handlers/agent_sources.py" = ["S603"]
 # F821 Undefined name `c`
 "binder/jupyter_config.py" = ["F821"]
 # RUF012 Mutable class attributes should be annotated with `typing.ClassVar`

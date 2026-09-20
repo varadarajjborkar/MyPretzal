@@ -47,8 +47,10 @@ from .extensions.manager import PluginManager
 from .extensions.readonly import ReadOnlyExtensionManager
 from .handlers.agent_handler import (
     AgentFetchHandler,
+    AgentGithubHandler,
     AgentSearchHandler,
     agent_fetch_handler_path,
+    agent_github_handler_path,
     agent_search_handler_path,
 )
 from .handlers.announcements import (
@@ -910,6 +912,7 @@ class LabApp(NotebookConfigShimMixin, LabServerApp):
         # Pretzel AI: web tools for the chat agent (the browser can't call these sites itself)
         handlers.append((agent_search_handler_path, AgentSearchHandler))
         handlers.append((agent_fetch_handler_path, AgentFetchHandler))
+        handlers.append((agent_github_handler_path, AgentGithubHandler))
 
         # If running under JupyterHub, add more metadata.
         if "hub_prefix" in self.serverapp.tornado_settings:

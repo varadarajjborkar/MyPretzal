@@ -1,61 +1,59 @@
-"""Web tools for the Pretzel chat agent: search the web, and read a page.
+"""Server endpoints for the chat agent's tools.
 
 # Copyright (c) Pretzel AI GmbH.
 # This file is part of the Pretzel project and is licensed under the
 # GNU Affero General Public License version 3.
 # See the LICENSE_AGPLv3 file at the root of the project for the full license text.
 
-The browser can't call search engines or arbitrary sites directly (no CORS headers), so the
-frontend posts here and the server makes the request. Two endpoints:
+The browser cannot call search engines or most websites itself (no CORS headers), so the frontend
+posts here and the server makes the request. Which sources answer which question is decided in
+agent_sources.py.
 
 ``POST /lab/api/agent/search``  {"query", "max_results", "provider", "api_key"}
-    -> {"results": [{"title", "url", "snippet"}], "provider": "..."}
+    -> {"results": [{"title", "url", "snippet"}], "sources": [...], "notes": [...]}
 
-``POST /lab/api/agent/fetch``   {"url", "max_chars"}
+``POST /lab/api/agent/fetch``   {"url", "max_chars", "query"}
     -> {"url", "title", "text", "truncated"}
 
-Search defaults to DuckDuckGo, which needs no account and costs nothing. A key for a paid
-search API can be passed per request, and is used instead when present.
+``POST /lab/api/agent/github``  {"action": "repo" | "file" | "search_code", ...}
+    -> the repository, one of its files, or code search results
 """
 
 import asyncio
 import ipaddress
-import re
 import socket
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import urlparse
 
-import httpx
-from bs4 import BeautifulSoup
 from jupyter_server.base.handlers import APIHandler
 from tornado import web
 
-# Sites are slow and the agent waits on them, so keep these short enough to fail fast
-AGENT_TIMEOUT = httpx.Timeout(10.0, read=25.0)
+from .agent_sources import (
+    SourceBlockedError,
+    SourceError,
+    github_file,
+    github_repo,
+    github_search_code,
+    parse_github_target,
+    read_page,
+    search_everything,
+)
 
-# A page can be enormous; the model only needs the readable part of it
 DEFAULT_MAX_CHARS = 8000
 HARD_MAX_CHARS = 40000
-MAX_DOWNLOAD_BYTES = 5_000_000
-
 DEFAULT_MAX_RESULTS = 5
 HARD_MAX_RESULTS = 15
 
-# Identify ourselves rather than pretending to be a browser
-USER_AGENT = "Mozilla/5.0 (compatible; PretzelAgent/1.0; +https://github.com/pretzelai/pretzelai)"
-
-# Page furniture that carries no content
-STRIP_TAGS = ("script", "style", "noscript", "nav", "header", "footer", "aside", "form", "svg")
-
 agent_search_handler_path = r"/lab/api/agent/search"
 agent_fetch_handler_path = r"/lab/api/agent/fetch"
+agent_github_handler_path = r"/lab/api/agent/github"
 
 
 def _is_public_url(url: str) -> bool:
     """Reject anything that isn't a public http(s) address.
 
-    The agent picks these URLs while reading web pages, so a hostile page could try to make it
-    fetch something on this machine or the local network. Resolving the name first also blocks
-    a public name that points at a private address.
+    The agent chooses these URLs while reading web pages, so a hostile page could try to make it
+    fetch something on this machine or the local network. Resolving the name first also blocks a
+    public name that points at a private address.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -74,99 +72,17 @@ def _is_public_url(url: str) -> bool:
     return True
 
 
-def _clean_text(text: str) -> str:
-    text = re.sub(r"[ \t\r\f\v]+", " ", text)
-    text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
-    return text.strip()
-
-
-def _unwrap_duckduckgo_link(href: str) -> str:
-    """DuckDuckGo wraps results as /l/?uddg=<encoded target>; give back the real URL."""
-    if not href:
-        return ""
-    if href.startswith("//"):
-        href = f"https:{href}"
-    parsed = urlparse(href)
-    if parsed.path.startswith("/l/"):
-        target = parse_qs(parsed.query).get("uddg")
-        if target:
-            return unquote(target[0])
-    return href
-
-
-async def _duckduckgo_search(query: str, max_results: int) -> list:
-    """Search with DuckDuckGo's HTML endpoint. No account, no key, no cost."""
-    async with httpx.AsyncClient(timeout=AGENT_TIMEOUT, follow_redirects=True) as client:
-        response = await client.post(
-            "https://html.duckduckgo.com/html/",
-            data={"q": query},
-            headers={"User-Agent": USER_AGENT, "Content-Type": "application/x-www-form-urlencoded"},
-        )
-    response.raise_for_status()
-
-    soup = BeautifulSoup(response.text, "html.parser")
-    results = []
-    for node in soup.select("div.result, div.web-result"):
-        link = node.select_one("a.result__a")
-        if not link:
-            continue
-        url = _unwrap_duckduckgo_link(link.get("href", ""))
-        if not url.startswith("http"):
-            continue
-        snippet = node.select_one(".result__snippet")
-        results.append(
-            {
-                "title": _clean_text(link.get_text()),
-                "url": url,
-                "snippet": _clean_text(snippet.get_text()) if snippet else "",
-            }
-        )
-        if len(results) >= max_results:
-            break
-    return results
-
-
-async def _tavily_search(query: str, max_results: int, api_key: str) -> list:
-    async with httpx.AsyncClient(timeout=AGENT_TIMEOUT) as client:
-        response = await client.post(
-            "https://api.tavily.com/search",
-            json={"query": query, "max_results": max_results},
-            headers={"Authorization": f"Bearer {api_key}"},
-        )
-    response.raise_for_status()
-    return [
-        {
-            "title": r.get("title", ""),
-            "url": r.get("url", ""),
-            "snippet": _clean_text(r.get("content", "")),
-        }
-        for r in response.json().get("results", [])[:max_results]
-    ]
-
-
-async def _parallel_search(query: str, max_results: int, api_key: str) -> list:
-    async with httpx.AsyncClient(timeout=AGENT_TIMEOUT) as client:
-        response = await client.post(
-            "https://api.parallel.ai/v1beta/search",
-            json={"objective": query, "search_queries": [query], "max_results": max_results},
-            headers={"x-api-key": api_key, "Content-Type": "application/json"},
-        )
-    response.raise_for_status()
-    results = []
-    for r in response.json().get("results", [])[:max_results]:
-        excerpts = r.get("excerpts") or []
-        results.append(
-            {
-                "title": r.get("title", ""),
-                "url": r.get("url", ""),
-                "snippet": _clean_text(" ".join(excerpts)[:1000]),
-            }
-        )
-    return results
+def _fail(error: Exception) -> web.HTTPError:
+    """Blocked sources are reported as 429 so the agent can say "I was turned away", not "nothing found"."""
+    if isinstance(error, SourceBlockedError):
+        return web.HTTPError(429, str(error))
+    if isinstance(error, SourceError):
+        return web.HTTPError(502, str(error))
+    return web.HTTPError(502, f"The tool failed: {error}")
 
 
 class AgentSearchHandler(APIHandler):
-    """Run a web search and return the top results as plain data."""
+    """Search the web and the places that answer better than the web."""
 
     @web.authenticated
     async def post(self) -> None:
@@ -177,78 +93,80 @@ class AgentSearchHandler(APIHandler):
         max_results = max(
             1, min(int(body.get("max_results") or DEFAULT_MAX_RESULTS), HARD_MAX_RESULTS)
         )
-        api_key = (body.get("api_key") or "").strip()
-        provider = (body.get("provider") or ("duckduckgo" if not api_key else "tavily")).lower()
 
         try:
-            if provider == "tavily" and api_key:
-                results = await _tavily_search(query, max_results, api_key)
-            elif provider == "parallel" and api_key:
-                results = await _parallel_search(query, max_results, api_key)
-            else:
-                provider = "duckduckgo"
-                results = await _duckduckgo_search(query, max_results)
-        except httpx.HTTPStatusError as e:
-            status = e.response.status_code
-            if status in (429, 403):
-                raise web.HTTPError(
-                    429, f"{provider} is rate limiting searches; try again shortly"
-                ) from e
-            raise web.HTTPError(502, f"{provider} returned an error ({status})") from e
-        except (httpx.HTTPError, asyncio.TimeoutError) as e:
-            raise web.HTTPError(502, f"Couldn't reach {provider}: {e}") from e
+            found = await search_everything(
+                query,
+                max_results,
+                provider=(body.get("provider") or "").lower(),
+                api_key=(body.get("api_key") or "").strip(),
+            )
+        except (SourceError, asyncio.TimeoutError) as e:
+            raise _fail(e) from e
 
-        self.finish({"provider": provider, "query": query, "results": results})
+        # Every source refused: that is a failure, not an empty result set
+        if not found["results"] and found["notes"] and not found["sources"]:
+            raise web.HTTPError(429, "; ".join(found["notes"])[:400])
 
-
-async def _read_page(url: str, max_chars: int) -> dict:
-    """Download one page and return its readable text, stripped of markup and page furniture."""
-    async with httpx.AsyncClient(timeout=AGENT_TIMEOUT, follow_redirects=True) as client:
-        response = await client.get(url, headers={"User-Agent": USER_AGENT})
-        response.raise_for_status()
-        content_type = response.headers.get("Content-Type", "")
-        raw = response.content[:MAX_DOWNLOAD_BYTES]
-
-    if "html" in content_type:
-        soup = BeautifulSoup(raw, "html.parser")
-        for tag in soup(list(STRIP_TAGS)):
-            tag.decompose()
-        title = _clean_text(soup.title.get_text()) if soup.title else ""
-        # Most documentation and article pages mark their content; using it drops menus,
-        # sidebars and cookie notices, which would otherwise eat the character budget
-        main = soup.find("main") or soup.find("article") or soup.find(attrs={"role": "main"})
-        text = _clean_text((main or soup).get_text("\n"))
-    else:
-        title = ""
-        text = _clean_text(raw.decode("utf-8", errors="replace"))
-
-    return {
-        "url": str(response.url),
-        "title": title,
-        "text": text[:max_chars],
-        "truncated": len(text) > max_chars,
-    }
+        self.finish({"query": query, **found})
 
 
 class AgentFetchHandler(APIHandler):
-    """Download one page and return its readable text."""
+    """Read one page, keeping the part that matches the question."""
 
     @web.authenticated
     async def post(self) -> None:
         body = self.get_json_body() or {}
         url = (body.get("url") or "").strip()
+        query = (body.get("query") or "").strip()
         max_chars = max(500, min(int(body.get("max_chars") or DEFAULT_MAX_CHARS), HARD_MAX_CHARS))
 
         if not _is_public_url(url):
             raise web.HTTPError(400, "Only public http(s) addresses can be read")
 
         try:
-            page = await _read_page(url, max_chars)
-        except httpx.HTTPStatusError as e:
-            raise web.HTTPError(
-                502, f"The page returned an error ({e.response.status_code})"
-            ) from e
-        except (httpx.HTTPError, asyncio.TimeoutError) as e:
-            raise web.HTTPError(502, f"Couldn't read that page: {e}") from e
+            self.finish(await read_page(url, max_chars, query))
+        except (SourceError, asyncio.TimeoutError) as e:
+            raise _fail(e) from e
 
-        self.finish(page)
+
+class AgentGithubHandler(APIHandler):
+    """Look inside a repository: what it is, what files it has, and what they contain."""
+
+    @web.authenticated
+    async def post(self) -> None:
+        body = self.get_json_body() or {}
+        action = (body.get("action") or "repo").lower()
+        repo = (body.get("repo") or "").strip()
+
+        try:
+            if action == "search_code":
+                query = (body.get("query") or "").strip()
+                if not query:
+                    raise web.HTTPError(400, "A search query is required")
+                results = await github_search_code(query, int(body.get("max_results") or 5))
+                self.finish({"results": results})
+                return
+
+            target = parse_github_target(repo)
+            if not target:
+                raise web.HTTPError(
+                    400, 'Give the repository as "owner/name" or its github.com URL'
+                )
+            owner, name, path_from_url = target
+
+            if action == "file":
+                path = (body.get("path") or path_from_url).strip()
+                if not path:
+                    raise web.HTTPError(400, "A file path is required")
+                content = await github_file(owner, name, path, (body.get("ref") or "").strip())
+                self.finish(
+                    {"repo": f"{owner}/{name}", "path": path, "content": content[:HARD_MAX_CHARS]}
+                )
+                return
+
+            self.finish(await github_repo(owner, name))
+        except web.HTTPError:
+            raise
+        except (SourceError, asyncio.TimeoutError) as e:
+            raise _fail(e) from e
