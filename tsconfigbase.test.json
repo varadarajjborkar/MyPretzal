@@ -5,7 +5,7 @@
     "noEmitOnError": true,
     "noUnusedLocals": true,
     "module": "commonjs",
-    "moduleResolution": "node",
+    "moduleResolution": "node10",
     "target": "ES2018",
     "outDir": "lib",
     "lib": ["DOM", "DOM.iterable"],
