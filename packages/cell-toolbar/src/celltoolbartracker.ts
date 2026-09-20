@@ -280,6 +280,11 @@ export class CellToolbarTracker implements IDisposable {
     // completed the layout update, resulting in the previous width being returned
     // using `getBoundingClientRect().width` in later functions.
     requestAnimationFrame(() => {
+      // A cell can be disposed between scheduling this and the frame running - closing its
+      // notebook is enough - and a disposed cell has no model and nothing left to measure.
+      if (activeCell.isDisposed || !activeCell.model) {
+        return;
+      }
       // Remove the "toolbar overlap" class from the cell, rendering the cell's toolbar
       const activeCellElement = activeCell.node;
       activeCellElement.classList.remove(TOOLBAR_OVERLAP_CLASS);
@@ -292,6 +297,9 @@ export class CellToolbarTracker implements IDisposable {
   }
 
   private _cellToolbarOverlapsContents(activeCell: Cell<ICellModel>): boolean {
+    if (activeCell.isDisposed || !activeCell.model) {
+      return false;
+    }
     const cellType = activeCell.model.type;
 
     // If the toolbar is too large for the current cell, hide it.
