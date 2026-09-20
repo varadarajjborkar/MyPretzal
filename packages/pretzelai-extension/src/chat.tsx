@@ -148,6 +148,16 @@ const writeAgentPref = (key: string, value: string): void => {
   }
 };
 
+// Markdown that must start a line: a code fence, heading, quote, table or list. The label goes
+// above such an answer rather than in front of it, because "***AI:*** ```python" is not a fence
+// any more, and the code would render as prose with its comments as headings.
+const STARTS_A_BLOCK = /^\s*(```|~~~|#{1,6}\s|>|\||[-*+]\s|\d+\.\s)/;
+
+const withLabel = (label: string, content: any): string => {
+  const text = typeof content === 'string' ? content : String(content ?? '');
+  return STARTS_A_BLOCK.test(text) ? `${label}\n\n${text}` : `${label} ${text}`;
+};
+
 function ChatNameInput({
   initialName,
   onSave,
@@ -1114,11 +1124,10 @@ export function Chat({
             )}
             <RendermimeMarkdown
               rmRegistry={rmRegistry}
-              markdownStr={
-                message.role === 'user'
-                  ? '***You:*** ' + (Array.isArray(message.content) ? message.content[0].text : message.content)
-                  : '***AI:*** ' + (Array.isArray(message.content) ? message.content[0].text : message.content)
-              }
+              markdownStr={withLabel(
+                message.role === 'user' ? '***You:***' : '***AI:***',
+                Array.isArray(message.content) ? message.content[0].text : message.content
+              )}
               notebookTracker={notebookTracker}
               role={message.role}
               images={

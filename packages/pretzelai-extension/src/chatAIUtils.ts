@@ -30,7 +30,10 @@ Answering:
 - Keep the words around the code short. No summary of the notebook, no restating the question, no explaining code nobody asked about.
 - If the request could mean two different things, ask one short question instead of answering both.
 
-Format: always markdown. All Python code MUST BE in a FENCED CODE BLOCK with language-specific highlighting. `;
+Format. Your answer is rendered as markdown in a narrow side panel, so:
+- Every piece of code goes in a fenced code block that starts on its own line and names the language (\`\`\`python), and the fence is closed. Code outside a fence is shown as prose, and its comments turn into headings.
+- Never put a heading inside code, and never indent code instead of fencing it. Comments stay as # comments inside the fence.
+- One short line of explanation before the code is enough. The panel is narrow, so keep lines and tables small. `;
 
 export const generateChatPrompt = async (
   lastContent: string,

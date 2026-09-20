@@ -824,3 +824,8 @@ body.jp-mod-dark .cm-editor.cm-merge-b .cm-changedText {
 #pretzelai-chat-panel .chat-agent-button.chat-agent-on svg {
   color: var(--jp-brand-color1);
 }
+
+/* Set when the cell's first line of code reaches the Ask AI button (see hideAskAIWhenCodeReachesIt) */
+.ask-ai-button-container.ask-ai-hidden {
+  display: none;
+}

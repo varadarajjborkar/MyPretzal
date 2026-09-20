@@ -105,9 +105,29 @@ function escapeLatexDelimiters(text: string) {
 }
 
 function wrapLabels(markdownStr: string): string {
-  return markdownStr
-    .replace(/^\*\*\*You:\*\*\* /, '<span class="chat-label unselectable">***You:*** </span>')
-    .replace(/^\*\*\*AI:\*\*\* /, '<span class="chat-label unselectable">***AI:*** </span>');
+  return markdownStr.replace(
+    /^\*\*\*(You|AI):\*\*\* ?/,
+    (_match, who) => `<span class="chat-label unselectable">***${who}:*** </span>`
+  );
+}
+
+/**
+ * Repair the markdown a model produced, so an answer renders as code whichever model wrote it.
+ *
+ * Two mistakes break the rendering badly, and models make both:
+ * a fence that doesn't start its own line is not a fence at all, so the code renders as prose
+ * and its `#` comments turn into huge headings; and a fence that is never closed leaves the rest
+ * of the answer inside the code block.
+ */
+export function repairMarkdown(text: string): string {
+  // Put a fence that follows text onto a line of its own ("Here you go: ```python")
+  let repaired = text.replace(/([^\n`])(`{3,}[\w+-]*[ \t]*\n)/g, '$1\n\n$2');
+  // Close a fence the model forgot to close
+  const fences = (repaired.match(/^[ \t]*`{3,}/gm) || []).length;
+  if (fences % 2 === 1) {
+    repaired += '\n```';
+  }
+  return repaired;
 }
 
 function RendermimeMarkdownBase(props: RendermimeMarkdownProps): JSX.Element {
@@ -117,7 +137,7 @@ function RendermimeMarkdownBase(props: RendermimeMarkdownProps): JSX.Element {
 
   useEffect(() => {
     const renderContent = async () => {
-      const mdStr = escapeLatexDelimiters(wrapLabels(props.markdownStr));
+      const mdStr = escapeLatexDelimiters(wrapLabels(repairMarkdown(props.markdownStr)));
       const model = props.rmRegistry.createModel({
         data: { [MD_MIME_TYPE]: mdStr }
       });

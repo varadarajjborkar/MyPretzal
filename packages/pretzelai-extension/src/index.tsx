@@ -30,7 +30,7 @@ import {
 } from './utils';
 
 import posthog from 'posthog-js';
-import { CodeCellModel } from '@jupyterlab/cells';
+import { Cell, CodeCellModel, ICellModel } from '@jupyterlab/cells';
 import { OutputAreaModel } from '@jupyterlab/outputarea';
 import { IOutputModel } from '@jupyterlab/rendermime';
 import { initSplashScreen } from './splashScreen';
@@ -514,7 +514,7 @@ const extension: JupyterFrontEndPlugin<void> = {
           });
         }
         if (cell.node) {
-          addAskAIButton(cell.node);
+          addAskAIButton(cell);
         }
       }
     });
@@ -586,7 +586,53 @@ const extension: JupyterFrontEndPlugin<void> = {
       setTimeout(() => observer.disconnect(), 5000);
     }
 
-    function addAskAIButton(cellNode: HTMLElement) {
+    /**
+     * Hide the Ask AI button once the cell's first line of code reaches it.
+     *
+     * JupyterLab does this for the cell toolbar, but it measures from the toolbar's own left
+     * edge, and the Ask AI button sits to the left of that: by the time the toolbar hides, the
+     * code has already run underneath this button. Measuring against the button itself, the same
+     * way JupyterLab measures its toolbar, makes it disappear at the moment the code arrives.
+     */
+    function hideAskAIWhenCodeReachesIt(cell: Cell<ICellModel>, buttonContainer: HTMLElement) {
+      const update = () => {
+        if (!buttonContainer.isConnected) {
+          stop();
+          return;
+        }
+        // Measure while visible, as JupyterLab does for its own toolbar
+        buttonContainer.classList.remove('ask-ai-hidden');
+        const lines = cell.node.getElementsByClassName('cm-line');
+        if (!lines.length) {
+          return;
+        }
+        const firstLine = lines[0];
+        const range = document.createRange();
+        range.selectNodeContents(firstLine);
+        const lineRight = firstLine.getBoundingClientRect().left + range.getBoundingClientRect().width;
+        const buttonLeft = buttonContainer.getBoundingClientRect().left;
+        if (buttonLeft && lineRight > buttonLeft - 6) {
+          buttonContainer.classList.add('ask-ai-hidden');
+        }
+      };
+
+      // A timeout rather than an animation frame: the measurement must happen even when the
+      // browser is not painting, and it has to run after the editor has laid the line out
+      const scheduled = () => setTimeout(update, 0);
+      const stop = () => {
+        // The cell may already be disposed, in which case there is nothing left to disconnect
+        cell.model?.sharedModel?.changed?.disconnect(scheduled);
+        window.removeEventListener('resize', scheduled);
+      };
+
+      // Typing changes the shared model; contentChanged only covers outputs and metadata
+      cell.model.sharedModel.changed.connect(scheduled);
+      window.addEventListener('resize', scheduled);
+      scheduled();
+    }
+
+    function addAskAIButton(cell: Cell<ICellModel>) {
+      const cellNode = cell.node;
       // Remove existing buttons and spinners from all cells before adding a new one
       document.querySelectorAll('.ask-ai-button-container, .loading-spinner').forEach(element => {
         element.remove();
@@ -612,6 +658,7 @@ const extension: JupyterFrontEndPlugin<void> = {
       tooltip.textContent = `Open the prompt box to instruct AI (${shortcutText})`;
       buttonContainer.appendChild(tooltip); // Append tooltip to buttonContainer
       placeAskAIButton(cellNode, buttonContainer);
+      hideAskAIWhenCodeReachesIt(cell, buttonContainer);
 
       button.onclick = () => {
         posthog.capture('Ask AI', {
