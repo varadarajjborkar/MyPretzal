@@ -48,8 +48,8 @@ agent_fetch_handler_path = r"/lab/api/agent/fetch"
 agent_github_handler_path = r"/lab/api/agent/github"
 
 
-def _is_public_url(url: str) -> bool:
-    """Reject anything that isn't a public http(s) address.
+def _address_problem(url: str) -> str:
+    """Why this URL cannot be read, or "" when it can.
 
     The agent chooses these URLs while reading web pages, so a hostile page could try to make it
     fetch something on this machine or the local network. Resolving the name first also blocks a
@@ -57,19 +57,19 @@ def _is_public_url(url: str) -> bool:
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        return False
+        return "Only public http(s) addresses can be read"
     try:
         infos = socket.getaddrinfo(parsed.hostname, None)
     except socket.gaierror:
-        return False
+        return f"There is no such site as {parsed.hostname}"
     for info in infos:
         try:
             address = ipaddress.ip_address(info[4][0])
         except ValueError:
-            return False
+            return "That address could not be read"
         if not address.is_global or address.is_multicast:
-            return False
-    return True
+            return "That address is on this machine or the local network, which is not allowed"
+    return ""
 
 
 def _fail(error: Exception) -> web.HTTPError:
@@ -121,8 +121,9 @@ class AgentFetchHandler(APIHandler):
         query = (body.get("query") or "").strip()
         max_chars = max(500, min(int(body.get("max_chars") or DEFAULT_MAX_CHARS), HARD_MAX_CHARS))
 
-        if not _is_public_url(url):
-            raise web.HTTPError(400, "Only public http(s) addresses can be read")
+        problem = _address_problem(url)
+        if problem:
+            raise web.HTTPError(400, problem)
 
         try:
             self.finish(await read_page(url, max_chars, query))

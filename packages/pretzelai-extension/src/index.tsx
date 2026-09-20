@@ -464,7 +464,8 @@ const extension: JupyterFrontEndPlugin<void> = {
     let debounceTimeout: NodeJS.Timeout | null = null;
 
     notebookTracker.activeCellChanged.connect((sender, cell) => {
-      if (cell) {
+      // A disposed cell arrives here with a null model
+      if (cell?.model) {
         cell.model.contentChanged.connect(() => {
           if (debounceTimeout) {
             clearTimeout(debounceTimeout);
@@ -498,7 +499,7 @@ const extension: JupyterFrontEndPlugin<void> = {
     });
 
     notebookTracker.activeCellChanged.connect((sender, cell) => {
-      if (cell && cell.model.type === 'code') {
+      if (cell?.model?.type === 'code') {
         const codeCellModel = cell.model as CodeCellModel;
         if (codeCellModel.outputs) {
           codeCellModel.outputs.changed.connect(() => {
