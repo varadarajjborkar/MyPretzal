@@ -22,6 +22,8 @@ import { CodeMirrorEditor } from '@jupyterlab/codemirror';
 import { fixCode } from '../postprocessing';
 
 import { ButtonsContainer } from './DiffButtonsComponent';
+import { installPackages, missingImports, readEnvironment } from '../agent/envTools';
+import { errorNameFrom, IMissingModule, missingModuleFrom, requirementFor } from '../agent/missingModule';
 import { EditorState, Extension } from '@codemirror/state';
 import { unifiedMergeView } from '@codemirror/merge';
 import { python } from '@codemirror/lang-python';
@@ -124,6 +126,17 @@ export const AIAssistantComponent: React.FC<IAIAssistantComponentProps> = props 
   const [newCode, setNewCode] = useState<string>('');
   const [oldCode, setOldCode] = useState<string>('');
   const [streamingDone, setStreamingDone] = useState<boolean>(false);
+  // A package that is missing cannot be fixed by rewriting the cell, so both the fixer and the
+  // prompt offer the install instead of guessing — and wait for a click, because installing
+  // changes the machine. `decline` is what happens if the user would rather not.
+  const [installOffer, setInstallOffer] = useState<{
+    missing: IMissingModule;
+    where: string;
+    declineLabel: string;
+    decline: () => void;
+    /** What to do once it is installed, when there is something worth doing. */
+    afterInstall?: () => void;
+  } | null>(null);
 
   const buttonsRef = React.useRef<HTMLDivElement>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
@@ -336,7 +349,9 @@ export const AIAssistantComponent: React.FC<IAIAssistantComponentProps> = props 
     }
   }, []);
 
-  const handleFixError = async () => {
+  /** Ask the model to rewrite the cell. Split out so the install offer can fall through to it. */
+  const askModelToFix = async (attempt: number) => {
+    setInstallOffer(null);
     setShowInputComponent(false);
     setShowStatusElement(true);
     setStatusElementText('Calculating embeddings...');
@@ -375,7 +390,8 @@ export const AIAssistantComponent: React.FC<IAIAssistantComponentProps> = props 
         ollamaMode: props.ollamaMode,
         ollamaApiKey: props.ollamaApiKey,
         groqApiKey: props.groqApiKey,
-        isInject: false
+        isInject: false,
+        fixAttempt: attempt
       });
 
       const activeCell = props.notebookTracker.activeCell;
@@ -396,7 +412,104 @@ export const AIAssistantComponent: React.FC<IAIAssistantComponentProps> = props 
     }
   };
 
+  /**
+   * Fix the error in this cell.
+   *
+   * Counting the tries is what stops the loop people fall into: the same error, the same rewrite,
+   * over and over. The count lives on the cell, so it survives this component being thrown away
+   * and rebuilt between attempts, and it resets as soon as the error changes.
+   */
+  const handleFixError = async () => {
+    const cell = props.notebookTracker.activeCell?.model;
+    const errorName = errorNameFrom(props.traceback || '');
+    const previous = (cell?.getMetadata('pretzelFix') as { error: string; tries: number }) || null;
+    const attempt = previous && previous.error === errorName ? previous.tries + 1 : 1;
+    cell?.setMetadata('pretzelFix', { error: errorName, tries: attempt });
+
+    // No amount of rewriting installs a package, so check for that before asking a model
+    const missing = missingModuleFrom(props.traceback || '');
+    if (missing) {
+      setShowInputComponent(false);
+      setShowStatusElement(true);
+      setStatusElementText('Checking the environment...');
+      try {
+        const report = await readEnvironment(props.notebookTracker, [missing.requirement]);
+        const entry = report.packages?.[missing.requirement];
+        const elsewhere = entry?.elsewhere?.length
+          ? ` It is installed elsewhere on this machine (${entry.elsewhere[0].path}), but not where this notebook runs.`
+          : '';
+        setStatusElementText('');
+        setInstallOffer({
+          missing,
+          where: `Python ${report.python} at ${report.prefix}.${elsewhere}`,
+          declineLabel: 'No, fix the code instead',
+          decline: () => void askModelToFix(attempt)
+        });
+        return;
+      } catch {
+        // If the kernel cannot be asked, fall through: a rewrite is better than nothing
+      }
+    }
+    await askModelToFix(attempt);
+  };
+
+  const handleInstall = async () => {
+    if (!installOffer) {
+      return;
+    }
+    const { missing, afterInstall } = installOffer;
+    setInstallOffer(null);
+    setShowStatusElement(true);
+    setStatusElementText(`Installing ${missing.requirement}...`);
+    const outcome = await installPackages(props.notebookTracker, [missing.requirement]).catch((error: any) => ({
+      ok: false,
+      message: error?.message || String(error)
+    }));
+    if (outcome.ok) {
+      setStatusElementText(
+        `Installed ${missing.requirement}. Run the cell again — restart the kernel first if ${missing.module} was already imported.`
+      );
+      afterInstall?.();
+    } else {
+      setStatusElementText(outcome.message.split('\n').slice(0, 2).join(' '));
+    }
+  };
+
+  /**
+   * Ask before writing code around a library that isn't here.
+   *
+   * The model is told which imports fail either way, but if the user actually wanted that library
+   * the useful answer is an install, not a workaround — so they get the choice before anything
+   * is generated.
+   */
   const handleSubmit = async (userInput: string, base64Images: string[]) => {
+    const source = props.notebookTracker.activeCell?.model.sharedModel.source ?? '';
+    const imports = [
+      ...new Set(
+        [...source.matchAll(/^[ \t]*(?:import[ \t]+([A-Za-z_][\w.]*)|from[ \t]+([A-Za-z_][\w.]*)[ \t]+import)/gm)].map(
+          match => (match[1] || match[2]).split('.')[0]
+        )
+      )
+    ].slice(0, 8);
+    const cannotImport = userInput.trim() ? await missingImports(props.notebookTracker, imports) : [];
+    if (cannotImport.length) {
+      const missing = requirementFor(cannotImport[0]);
+      setShowInputComponent(false);
+      setShowStatusElement(true);
+      setStatusElementText('');
+      setInstallOffer({
+        missing,
+        where: 'This cell imports it, so whatever I write will fail until it is there.',
+        declineLabel: 'Write the code anyway',
+        decline: () => void generateFromPrompt(userInput, base64Images),
+        afterInstall: () => void generateFromPrompt(userInput, base64Images)
+      });
+      return;
+    }
+    await generateFromPrompt(userInput, base64Images);
+  };
+
+  const generateFromPrompt = async (userInput: string, base64Images: string[]) => {
     const { extractedCode } = getSelectedCode(props.notebookTracker);
 
     let activeCell = props.notebookTracker.activeCell;
@@ -485,7 +598,32 @@ export const AIAssistantComponent: React.FC<IAIAssistantComponentProps> = props 
 
   return (
     <div ref={containerRef}>
-      {showStatusElement && <p className="status-element">{statusElementText}</p>}
+      {showStatusElement && statusElementText && <p className="status-element">{statusElementText}</p>}
+      {installOffer && (
+        <div className="pretzel-install-offer">
+          <p className="pretzel-install-reason">
+            {installOffer.missing.why}. {installOffer.where}
+          </p>
+          <div className="pretzel-install-buttons">
+            <button className="jp-Dialog-button jp-mod-accept jp-mod-styled" onClick={handleInstall}>
+              Install {installOffer.missing.requirement}
+            </button>
+            <button
+              className="jp-Dialog-button jp-mod-reject jp-mod-styled"
+              onClick={() => {
+                const { decline } = installOffer;
+                setInstallOffer(null);
+                decline();
+              }}
+            >
+              {installOffer.declineLabel}
+            </button>
+            <button className="jp-Dialog-button jp-mod-reject jp-mod-styled" onClick={props.handleRemove}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
       {showInputComponent && initialPrompt !== null && (
         <InputComponent
           isAIEnabled={props.isAIEnabled}

@@ -16,6 +16,55 @@ import { getCookie, processTaggedVariables } from './utils';
 import { ServerConnection } from '@jupyterlab/services';
 import { URLExt } from '@jupyterlab/coreutils';
 import { INotebookTracker } from '@jupyterlab/notebook';
+import { environmentContext, missingImports } from './agent/envTools';
+import {
+  CODE_DISPLAY_GUIDANCE,
+  CODE_ENVIRONMENT_GUIDANCE,
+  CODE_FIX_GUIDANCE,
+  CODE_OBEDIENCE_GUIDANCE
+} from './agent/guidance';
+
+/** The rule every in-cell prompt ends on: what comes back goes straight into a cell. */
+const CODE_ONLY =
+  '**VERY IMPORTANT**: This code will be run directly in a Jupyter cell. So: Return ONLY RUNNABLE AND VALID python code WITHOUT ANY BACKTICKS.';
+
+/** The top-level modules a piece of Python imports. */
+const importedNames = (code: string): string[] => {
+  const found = new Set<string>();
+  const pattern = /^[ \t]*(?:import[ \t]+([A-Za-z_][\w.]*)|from[ \t]+([A-Za-z_][\w.]*)[ \t]+import)/gm;
+  let match = pattern.exec(code);
+  while (match) {
+    found.add((match[1] || match[2]).split('.')[0]);
+    match = pattern.exec(code);
+  }
+  return [...found].slice(0, 8);
+};
+
+/**
+ * Add what the model needs to know about this machine to a prompt that asks for code.
+ *
+ * Without it the model writes for the Python it imagines rather than the one that will run the
+ * code, and a missing package turns into an endless rewrite instead of an install.
+ */
+const withContext = (prompt: string, environment: string, isFix: boolean, missing: string[] = []): string => {
+  const blocks = [prompt.replace(CODE_ONLY, '').trimEnd()];
+  if (missing.length) {
+    blocks.push(
+      `*NOT INSTALLED*\nThese modules cannot be imported in this kernel: ${missing.join(', ')}. ` +
+        'Say so in a comment at the top rather than writing code that pretends they are there, ' +
+        'and do not silently swap in a different library.\n*END NOT INSTALLED*'
+    );
+  }
+  if (environment) {
+    blocks.push(`*ENVIRONMENT*\nThis code will run here:\n${environment}\n*END ENVIRONMENT*`);
+  }
+  blocks.push(CODE_OBEDIENCE_GUIDANCE, CODE_ENVIRONMENT_GUIDANCE, CODE_DISPLAY_GUIDANCE);
+  if (isFix) {
+    blocks.push(CODE_FIX_GUIDANCE);
+  }
+  blocks.push(CODE_ONLY);
+  return blocks.join('\n\n');
+};
 
 export type Embedding = {
   id: string;
@@ -31,23 +80,38 @@ export async function generatePrompt(
   notebookTracker: INotebookTracker,
   selectedCode: string = '',
   traceback: string = '',
-  isInject: boolean = false
+  isInject: boolean = false,
+  fixAttempt: number = 1
 ): Promise<string> {
   userInput = await processTaggedVariables(userInput, notebookTracker);
+  const environment = await environmentContext(notebookTracker);
+  // A model that cannot see which imports fail here will happily write code around a missing
+  // package, which is how people end up fixing the same error for half an hour
+  const missing = await missingImports(notebookTracker, importedNames(`${oldCode}\n${selectedCode}`));
 
   if (selectedCode) {
-    return generatePromptEditPartial(userInput, selectedCode, oldCode, topSimilarities);
+    return withContext(
+      generatePromptEditPartial(userInput, selectedCode, oldCode, topSimilarities),
+      environment,
+      false,
+      missing
+    );
   }
   if (traceback) {
-    return generatePromptErrorFix(traceback, oldCode, topSimilarities);
+    return withContext(
+      generatePromptErrorFix(traceback, oldCode, topSimilarities, fixAttempt),
+      environment,
+      true,
+      missing
+    );
   }
   if (isInject) {
-    return generatePromptInject(userInput, oldCode, topSimilarities);
+    return withContext(generatePromptInject(userInput, oldCode, topSimilarities), environment, false, missing);
   }
   if (oldCode) {
-    return generatePromptFullEdit(userInput, oldCode, topSimilarities);
+    return withContext(generatePromptFullEdit(userInput, oldCode, topSimilarities), environment, false, missing);
   }
-  return generatePromptNew(userInput, oldCode, topSimilarities);
+  return withContext(generatePromptNew(userInput, oldCode, topSimilarities), environment, false, missing);
 }
 
 function generatePromptFullEdit(userInput: string, oldCode: string, topSimilarities: string[]): string {
@@ -186,7 +250,12 @@ Modify the SELECTED CODE (*THIS IS VERY IMPORTANT!!!*) according to the user's i
 **VERY IMPORTANT**: This code will be run directly in a Jupyter cell. So: Return ONLY RUNNABLE AND VALID python code WITHOUT ANY BACKTICKS.`;
 }
 
-function generatePromptErrorFix(traceback: string, oldCode: string, topSimilarities: string[]): string {
+function generatePromptErrorFix(
+  traceback: string,
+  oldCode: string,
+  topSimilarities: string[],
+  fixAttempt: number = 1
+): string {
   const initPrompt =
     'You are a Data Science expert and an expert python programmer. ' +
     'You are helping users fix errors in Jupyter notebook cells. ' +
@@ -219,6 +288,11 @@ ${topSimilarities.join('\n```\n\n```\n')}
     : ''
 }
 
+${
+  fixAttempt > 1
+    ? `This is attempt ${fixAttempt} at this same error: the previous fixes did not work. That usually means the cause is NOT in this code — it is the environment, a package version, or the data. Say what you now think it is in a comment at the top, and make the smallest change you can rather than rewriting it again.\n`
+    : ''
+}
 Take a deep breath, think step-by-step and respond with MODIFIED version of CURRENT CELL CODE to fix the error. Add a PYTHON COMMENT explaining what you did. IF NEEDED, use of Jupyter bang and magic.
 
 **VERY IMPORTANT**: This code will be run directly in a Jupyter cell. So: Return ONLY RUNNABLE AND VALID python code WITHOUT ANY BACKTICKS.`;

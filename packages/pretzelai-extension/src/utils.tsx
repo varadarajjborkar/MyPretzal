@@ -617,7 +617,8 @@ export const generateAIStream = async ({
   ollamaMode,
   ollamaApiKey,
   groqApiKey,
-  isInject
+  isInject,
+  fixAttempt
 }: {
   aiChatModelProvider: string;
   aiChatModelString: string;
@@ -644,6 +645,8 @@ export const generateAIStream = async ({
   ollamaApiKey: string;
   groqApiKey: string;
   isInject: boolean;
+  /** Which try this is at the same error, so a fixer that is going in circles can say so. */
+  fixAttempt?: number;
 }): Promise<AsyncIterable<any>> => {
   const { extractedCode } = getSelectedCode(notebookTracker);
   const topSimilarities = await getTopSimilarities(
@@ -663,7 +666,8 @@ export const generateAIStream = async ({
     notebookTracker,
     extractedCode,
     traceback,
-    isInject
+    isInject,
+    fixAttempt
   );
 
   if (posthogPromptTelemetry) {
