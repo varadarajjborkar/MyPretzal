@@ -32,12 +32,17 @@
    narrow notebook (a laptop screen with the chat panel open). Sitting alongside costs no width. */
 .jp-cell-toolbar .ask-ai-button-container {
   position: absolute;
-  top: 0;
   right: 100%;
-  display: flex;
-  align-items: center;
-  height: 100%;
-  margin-right: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+
+  /* The toolbar is narrow, so an absolutely positioned box inside it shrinks to fit and wraps the
+     label onto two lines. These keep the button the size and shape it has always been. */
+  display: block;
+  width: max-content;
+  height: auto;
+  white-space: nowrap;
+  margin-right: 8px;
 }
 
 /* If the button could not be placed in the toolbar, it at least disappears when the toolbar does */
