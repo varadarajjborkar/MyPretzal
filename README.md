@@ -19,11 +19,21 @@ pip install "git+https://github.com/varadarajjborkar/MyPretzal.git"
 
 This repo is private, so run `gh auth login` and `gh auth setup-git` once first, so pip can read it.
 
-It goes quiet for a few minutes and shows no progress bar. That's normal: pip only draws a bar when it downloads a ready-made file of a known size. Here it copies this repo with git (pip passes `--quiet`, which hides git's own progress) and then builds the package. Add `-vv` to watch both:
+### If the install looks frozen
+
+It goes quiet for a few minutes. pip only draws a progress bar when it downloads one ready-made file of a known size, which isn't what happens here: it copies this whole repo with git, silencing git on purpose with `--quiet`, and then builds the package.
+
+To have it report progress from then on, without typing anything extra, make this file once:
 
 ```bash
-pip install -vv "git+https://github.com/varadarajjborkar/MyPretzal.git"
+mkdir -p ~/.config/pip
+cat > ~/.config/pip/pip.conf <<'EOF'
+[install]
+verbose = 2
+EOF
 ```
+
+pip then runs git with `--progress` instead, so you see `Receiving objects: 47%` and each build step. This applies to every `pip install`, so other packages get chattier too. Delete the file to go back.
 
 ## Run
 
@@ -55,7 +65,7 @@ Either way your own data stays: settings and keys in `~/.jupyter`, and each proj
 
 ## Shortcuts
 
-Optional. Add this to `~/.zshrc` for one-word install, update, remove and run, with the progress shown:
+Optional. Add this to `~/.zshrc` for one-word install, update, remove and run:
 
 ```bash
 pretzel-install() {
@@ -66,9 +76,9 @@ pretzel-install() {
     return 1
   fi
   if "$pip" show pretzelai >/dev/null 2>&1; then
-    "$pip" install -vv --force-reinstall --no-deps "$repo"
+    "$pip" install --force-reinstall --no-deps "$repo"
   else
-    "$pip" install -vv "$repo"
+    "$pip" install "$repo"
   fi
 }
 
