@@ -17,6 +17,7 @@ import { ServerConnection } from '@jupyterlab/services';
 import { URLExt } from '@jupyterlab/coreutils';
 import { INotebookTracker } from '@jupyterlab/notebook';
 import { environmentContext, missingImports } from './agent/envTools';
+import { libraryMentions } from './agent/mentions';
 import {
   CODE_DISPLAY_GUIDANCE,
   CODE_ENVIRONMENT_GUIDANCE,
@@ -87,7 +88,10 @@ export async function generatePrompt(
   const environment = await environmentContext(notebookTracker);
   // A model that cannot see which imports fail here will happily write code around a missing
   // package, which is how people end up fixing the same error for half an hour
-  const missing = await missingImports(notebookTracker, importedNames(`${oldCode}\n${selectedCode}`));
+  // ...and a library named in the request counts too, before any of it has been written down
+  const missing = await missingImports(notebookTracker, [
+    ...new Set([...importedNames(`${oldCode}\n${selectedCode}`), ...libraryMentions(userInput)])
+  ]);
 
   if (selectedCode) {
     return withContext(

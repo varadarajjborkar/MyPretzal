@@ -35,7 +35,7 @@ import { RendermimeMarkdown } from './components/rendermime-markdown';
 import { DEFAULT_MAX_STEPS, IAgentStep, runOllamaAgent, TOOL_GUIDANCE, WEB_GUIDANCE } from './agent/agentLoop';
 import { IAgentTool, webTools } from './agent/webTools';
 import { createNotebookTools } from './agent/notebookTools';
-import { createEnvTools, environmentContext, forgetEnvironment } from './agent/envTools';
+import { createEnvTools, environmentContext, forgetEnvironment, mentionNote } from './agent/envTools';
 import { DISPLAY_GUIDANCE, ENVIRONMENT_GUIDANCE, NOTEBOOK_STATE_GUIDANCE, OBEDIENCE_GUIDANCE } from './agent/guidance';
 import { AgentApproval, AgentButton, IAgentTools } from './components/AgentButton';
 import { ChatModelPicker } from './components/ChatModelPicker';
@@ -557,9 +557,12 @@ export function Chat({
   };
 
   /** Everything the model should know about where it is working, for this run. */
-  const guidanceForRun = async (): Promise<string> => {
+  const guidanceForRun = async (userText: string): Promise<string> => {
     const choice = agentToolsRef.current;
-    const parts = [TOOL_GUIDANCE, OBEDIENCE_GUIDANCE];
+    // Before anything general: what the question itself names, looked up in this kernel. It is
+    // the most specific thing we know, and a long system message is read from the top.
+    const mentioned = choice.environment ? await mentionNote(notebookTracker, userText) : '';
+    const parts = [TOOL_GUIDANCE, OBEDIENCE_GUIDANCE, ...(mentioned ? [mentioned] : [])];
     if (choice.notebook) {
       parts.push(NOTEBOOK_STATE_GUIDANCE);
     }
@@ -585,8 +588,8 @@ export function Chat({
    * Looking something up and rewriting a cell are not the same kind of act, so the middle
    * setting tells them apart: read freely, ask before anything changes.
    */
-  const needsApproval = (tool: IAgentTool): boolean => {
-    if (tool.alwaysAsk) {
+  const needsApproval = (tool: IAgentTool, args: any): boolean => {
+    if (tool.alwaysAsk || tool.alwaysAskFor?.(args)) {
       return true;
     }
     const mode = agentApprovalRef.current;
@@ -614,7 +617,7 @@ export function Chat({
       selectedCode
     );
     const messages = [
-      { role: 'system', content: `${CHAT_SYSTEM_MESSAGE}\n\n${await guidanceForRun()}` },
+      { role: 'system', content: `${CHAT_SYSTEM_MESSAGE}\n\n${await guidanceForRun(asText(lastMessage.content))}` },
       // Images aren't passed on: tool calling and images can't be combined in one Ollama request
       ...formattedMessages.slice(1, -1).map(msg => ({ role: msg.role, content: asText(msg.content) })),
       { role: 'user', content: question }
@@ -638,7 +641,7 @@ export function Chat({
           }
         },
         approve: (tool, args) =>
-          needsApproval(tool)
+          needsApproval(tool, args)
             ? new Promise<boolean>(resolve => setPendingApproval({ label: tool.label(args), resolve }))
             : Promise.resolve(true)
       });
@@ -709,9 +712,12 @@ export function Chat({
       (async () => {
         // Even without tools, an answer written for the wrong Python is worse than no answer
         const environment = await environmentContext(notebookTracker);
+        // A model with no tools cannot look a library up, so the lookup has to come to it
+        const mentioned = await mentionNote(notebookTracker, editorValueFromEvent);
         formattedMessages[0].content = [
           CHAT_SYSTEM_MESSAGE,
           OBEDIENCE_GUIDANCE,
+          mentioned,
           DISPLAY_GUIDANCE,
           ENVIRONMENT_GUIDANCE,
           environment ? `This notebook is running in:\n${environment}` : ''
@@ -813,9 +819,12 @@ export function Chat({
       (async () => {
         // "Without context" means without your code, not without knowing which Python this is
         const environment = await environmentContext(notebookTracker);
+        // A model with no tools cannot look a library up, so the lookup has to come to it
+        const mentioned = await mentionNote(notebookTracker, editorValueFromEvent);
         formattedMessages[0].content = [
           CHAT_SYSTEM_MESSAGE,
           OBEDIENCE_GUIDANCE,
+          mentioned,
           DISPLAY_GUIDANCE,
           ENVIRONMENT_GUIDANCE,
           environment ? `This notebook is running in:\n${environment}` : ''

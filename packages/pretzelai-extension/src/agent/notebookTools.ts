@@ -375,6 +375,17 @@ export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INoteboo
     }
   };
 
+  /**
+   * Whether running this cell would install something.
+   *
+   * The install tool always asks, because installing changes the machine outside the notebook.
+   * A cell saying `!pip install torch` does exactly the same thing, so it asks too — otherwise
+   * "let it run" quietly becomes permission to install.
+   */
+  const installsSomething = (source: string): boolean =>
+    /(^|\n)\s*[!%]\s*(pip|conda|uv|mamba|micromamba)\s+install\b/.test(source) ||
+    /(^|\n)[^#\n]*\bpip\b[^\n]*\binstall\b/.test(source);
+
   const runCell: IAgentTool = {
     name: 'run_cell',
     risk: 'write',
@@ -387,7 +398,22 @@ export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INoteboo
       properties: { index: { type: 'integer', description: 'Which cell to run, counting from 0' } },
       required: ['index']
     },
-    label: args => `Running cell ${args?.index}`,
+    alwaysAskFor: args => {
+      try {
+        return installsSomething(cellAt(panelOf(tracker), args?.index).model.sharedModel.source);
+      } catch {
+        return false;
+      }
+    },
+    label: args => {
+      let installs = false;
+      try {
+        installs = installsSomething(cellAt(panelOf(tracker), args?.index).model.sharedModel.source);
+      } catch {
+        installs = false;
+      }
+      return installs ? `Running cell ${args?.index} — it installs packages` : `Running cell ${args?.index}`;
+    },
     run: async args => {
       const panel = panelOf(tracker);
       const cell = cellAt(panel, args?.index);

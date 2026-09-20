@@ -71,7 +71,11 @@ Only public web addresses can be read. Anything on this machine or the local net
 
 Click **Fix Error with AI** on a cell that failed with `ModuleNotFoundError` and you get an offer to install the package, not another rewrite — with the exact Python it looked in, and the right package name (`cv2` offers `opencv-python`). Say *No, fix the code instead* and it goes to the model as before.
 
-The same offer comes up from **Cmd+K** in a cell whose imports don't resolve, before any code is written, with *Write the code anyway* if you meant it. In the chat, installing is a tool call that always waits for **Allow**. Nothing is ever installed without you clicking.
+The same offer comes up from **Cmd+K** in a cell whose imports don't resolve, before any code is written, with *Write the code anyway* if you meant it. Naming a library in the question counts too: ask for *a bouncing ball with pygame* in a kernel with no pygame and you are offered the install before a line is written.
+
+The chat does the same check on its own. Libraries you name are looked up in the kernel before the model answers, so it is told *gymnasium is not installed here* rather than having to remember to ask — which is the difference between an honest answer and a confident block of code that cannot run.
+
+Installing always waits for **Allow**, and so does running a cell that installs something: *Running cell 1 — it installs packages* asks even on *Let it run*. Nothing is installed without you clicking.
 
 This is there because no rewrite of an import statement has ever installed anything, and asking a model to fix the same error twice gets you the same wrong answer twice. If you do go round again, the fixer is told which attempt this is and asked to name what it now thinks is really wrong.
 

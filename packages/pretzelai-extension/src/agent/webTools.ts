@@ -25,6 +25,13 @@ export interface IAgentTool {
   risk?: 'read' | 'write';
   /** Ask the user every time, whatever the approval setting is. */
   alwaysAsk?: boolean;
+  /**
+   * Ask about this particular call, whatever the approval setting is.
+   *
+   * Some calls are only as safe as their arguments: running a cell is ordinary, running a cell
+   * that happens to say `!pip install` changes the machine the same way the install tool does.
+   */
+  alwaysAskFor?: (args: any) => boolean;
   /** Short line describing this call, shown in the chat while it runs. */
   label: (args: any) => string;
   run: (args: any, signal?: AbortSignal) => Promise<string>;

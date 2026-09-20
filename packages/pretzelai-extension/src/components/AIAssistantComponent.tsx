@@ -23,6 +23,7 @@ import { fixCode } from '../postprocessing';
 
 import { ButtonsContainer } from './DiffButtonsComponent';
 import { installPackages, missingImports, readEnvironment } from '../agent/envTools';
+import { libraryMentions } from '../agent/mentions';
 import { errorNameFrom, IMissingModule, missingModuleFrom, requirementFor } from '../agent/missingModule';
 import { EditorState, Extension } from '@codemirror/state';
 import { unifiedMergeView } from '@codemirror/merge';
@@ -491,15 +492,20 @@ export const AIAssistantComponent: React.FC<IAIAssistantComponentProps> = props 
         )
       )
     ].slice(0, 8);
-    const cannotImport = userInput.trim() ? await missingImports(props.notebookTracker, imports) : [];
+    // "make a bouncing ball with vpython" names the library just as plainly as an import line does
+    const candidates = [...new Set([...imports, ...libraryMentions(userInput)])];
+    const cannotImport = userInput.trim() ? await missingImports(props.notebookTracker, candidates) : [];
     if (cannotImport.length) {
       const missing = requirementFor(cannotImport[0]);
+      const inCell = imports.includes(cannotImport[0]);
       setShowInputComponent(false);
       setShowStatusElement(true);
       setStatusElementText('');
       setInstallOffer({
         missing,
-        where: 'This cell imports it, so whatever I write will fail until it is there.',
+        where: inCell
+          ? 'This cell imports it, so whatever I write will fail until it is there.'
+          : 'You asked for it by name and it is not in this kernel, so whatever I write will fail until it is there.',
         declineLabel: 'Write the code anyway',
         decline: () => void generateFromPrompt(userInput, base64Images),
         afterInstall: () => void generateFromPrompt(userInput, base64Images)

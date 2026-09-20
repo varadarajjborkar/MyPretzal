@@ -9,6 +9,8 @@
 import { INotebookTracker } from '@jupyterlab/notebook';
 import { IAgentTool } from './webTools';
 import { ENV_PROBE, INSTALL_PROBE, unsafeRequirement } from './envProbe';
+import { libraryMentions } from './mentions';
+import { requirementFor } from './missingModule';
 import { kernelProblem, runInKernel, runInKernelForJson } from './kernel';
 
 /** What the probe reports back about the kernel's environment. */
@@ -306,4 +308,72 @@ export async function missingImports(tracker: INotebookTracker | null, names: st
   } catch {
     return [];
   }
+}
+
+/**
+ * What the question's own words say about this environment.
+ *
+ * The model has a tool for this and is told to use it, and most of the time it does. When it
+ * doesn't, you get a confident block of gymnasium code in a kernel with no gymnasium, which
+ * fails, gets "fixed", and fails again in exactly the same way. So the names in the question are
+ * looked up before the model sees it: one silent probe, and the answer is in front of it whether
+ * it thought to ask or not.
+ *
+ * Nothing is reported for a library nobody mentioned, and nothing at all when the question names
+ * no library — which is most questions, and costs nothing.
+ */
+export async function mentionNote(tracker: INotebookTracker | null, text: string): Promise<string> {
+  const names = libraryMentions(text);
+  if (!names.length || kernelProblem(tracker)) {
+    return '';
+  }
+  // Same reasoning as environmentContext: never make the user wait behind their own cell
+  if (tracker?.currentWidget?.sessionContext?.kernelDisplayStatus === 'busy') {
+    return '';
+  }
+  let packages: IEnvReport['packages'];
+  try {
+    packages = (await readEnvironment(tracker, names)).packages;
+  } catch {
+    return '';
+  }
+  if (!packages) {
+    return '';
+  }
+
+  const missing: string[] = [];
+  const here: string[] = [];
+  for (const name of names) {
+    const entry = packages[name] ?? { version: null, importable: false };
+    if (entry.importable || entry.version) {
+      // `importable` is the one that matters: cv2 is there under the name opencv-python, and a
+      // version string for a distribution you cannot import helps nobody.
+      here.push(entry.version ? `${name} ${entry.version}` : name);
+      continue;
+    }
+    const { requirement } = requirementFor(name);
+    const elsewhere = entry.elsewhere?.length
+      ? ` It is installed elsewhere on this machine (${entry.elsewhere
+          .map(p => p.path)
+          .join(', ')}), which means a different Python — installing it here is the fix, not changing the code.`
+      : '';
+    missing.push(
+      `${name} is NOT installed in this kernel: \`import ${name}\` fails here.` +
+        ` Installing \`${requirement}\` is what would add it.${elsewhere}`
+    );
+  }
+
+  const parts: string[] = [];
+  if (missing.length) {
+    parts.push(
+      `*NOT INSTALLED*\nThe question names ${missing.length === 1 ? 'a library' : 'libraries'} that this kernel ` +
+        `does not have. This was checked just now, so it is not a guess:\n${missing.join('\n')}\n` +
+        'Do not write code that imports it as though it were there. Offer to install it — that asks the user ' +
+        'first — or say plainly that it is missing. Rewriting the code cannot fix a missing package.'
+    );
+  }
+  if (here.length) {
+    parts.push(`*ALREADY INSTALLED*\nThese are in this kernel and need no install: ${here.join(', ')}.`);
+  }
+  return parts.join('\n\n');
 }
