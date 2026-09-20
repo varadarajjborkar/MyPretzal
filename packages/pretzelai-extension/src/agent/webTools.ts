@@ -17,6 +17,14 @@ export interface IAgentTool {
   name: string;
   description: string;
   parameters: Record<string, any>;
+  /**
+   * Whether this call only looks at things ('read') or changes them ('write'): edits a cell,
+   * runs code, installs a package. The approval setting is read against this, so a user who
+   * wants to be asked before anything changes is not also asked before every search.
+   */
+  risk?: 'read' | 'write';
+  /** Ask the user every time, whatever the approval setting is. */
+  alwaysAsk?: boolean;
   /** Short line describing this call, shown in the chat while it runs. */
   label: (args: any) => string;
   run: (args: any, signal?: AbortSignal) => Promise<string>;
@@ -64,6 +72,7 @@ export interface ISearchResult {
 
 export const webSearchTool: IAgentTool = {
   name: 'web_search',
+  risk: 'read',
   description:
     'Search the web and get a list of results with titles, URLs and short extracts. ' +
     'Use it to find current information, documentation or examples. ' +
@@ -100,6 +109,7 @@ export const webSearchTool: IAgentTool = {
 
 export const readPageTool: IAgentTool = {
   name: 'read_page',
+  risk: 'read',
   description:
     'Read one web page and get its text. Use it after web_search to read a result in full, ' +
     'or directly when you already know the URL (documentation, an article, a GitHub page). ' +
@@ -144,6 +154,7 @@ export const readPageTool: IAgentTool = {
 
 export const githubRepoTool: IAgentTool = {
   name: 'github_repo',
+  risk: 'read',
   description:
     'Look at a GitHub repository: what it is for, its README, and the list of files in it. ' +
     'Use this instead of read_page for anything on github.com, and before answering questions ' +
@@ -175,6 +186,7 @@ export const githubRepoTool: IAgentTool = {
 
 export const githubFileTool: IAgentTool = {
   name: 'github_file',
+  risk: 'read',
   description:
     'Read one file from a GitHub repository, by its path inside that repository. ' +
     'Use github_repo first to see which files exist.',

@@ -32,9 +32,12 @@ import pretzelSvg from '../style/icons/pretzel.svg';
 import { CHAT_SYSTEM_MESSAGE, chatAIStream, generateChatPrompt } from './chatAIUtils';
 import { describeChatError } from './chatErrors';
 import { RendermimeMarkdown } from './components/rendermime-markdown';
-import { AGENT_SYSTEM_MESSAGE, IAgentStep, runOllamaAgent } from './agent/agentLoop';
-import { webTools } from './agent/webTools';
-import { AgentApproval, AgentButton } from './components/AgentButton';
+import { DEFAULT_MAX_STEPS, IAgentStep, runOllamaAgent, TOOL_GUIDANCE, WEB_GUIDANCE } from './agent/agentLoop';
+import { IAgentTool, webTools } from './agent/webTools';
+import { createNotebookTools } from './agent/notebookTools';
+import { createEnvTools, environmentContext, forgetEnvironment } from './agent/envTools';
+import { DISPLAY_GUIDANCE, ENVIRONMENT_GUIDANCE, NOTEBOOK_STATE_GUIDANCE, OBEDIENCE_GUIDANCE } from './agent/guidance';
+import { AgentApproval, AgentButton, IAgentTools } from './components/AgentButton';
 import { ChatModelPicker } from './components/ChatModelPicker';
 import { globalState } from './globalState';
 import { getDefaultSettings } from './migrations/defaultSettings';
@@ -458,10 +461,18 @@ export function Chat({
   }, [base64Images]);
 
   // Web search ("agent mode"): the model may search the web and read pages before answering.
-  const [agentEnabled, setAgentEnabled] = useState(() => readAgentPref('pretzel-agent-enabled') === 'true');
-  const [agentApproval, setAgentApproval] = useState<AgentApproval>(() =>
-    readAgentPref('pretzel-agent-approval') === 'ask' ? 'ask' : 'auto'
-  );
+  // Reading the notebook and the environment is local and quick, so it starts on. Searching the
+  // web goes out to other people's servers and takes seconds, so that one is the user's choice.
+  const [agentTools, setAgentTools] = useState<IAgentTools>(() => ({
+    notebook: readAgentPref('pretzel-agent-notebook') !== 'false',
+    environment: readAgentPref('pretzel-agent-environment') !== 'false',
+    web: readAgentPref('pretzel-agent-enabled') === 'true'
+  }));
+  const [agentApproval, setAgentApproval] = useState<AgentApproval>(() => {
+    const saved = readAgentPref('pretzel-agent-approval');
+    return saved === 'ask' || saved === 'auto' || saved === 'changes' ? saved : 'changes';
+  });
+  const agentEnabled = agentTools.notebook || agentTools.environment || agentTools.web;
   // What the agent is doing right now, shown in place of "Generating AI response..."
   const [agentStatus, setAgentStatus] = useState('');
   const [pendingApproval, setPendingApproval] = useState<{
@@ -469,16 +480,48 @@ export function Chat({
     resolve: (allowed: boolean) => void;
   } | null>(null);
   // Tool calling needs a provider that supports it; Ollama is the one wired up so far
-  const agentSupported = aiChatModelProvider === 'Ollama' && !!ollamaBaseUrl;
+  // Tool calling needs a provider and a model that can do it. The model is asked once, when it
+  // changes, so a model that cannot use tools quietly gets the ordinary chat instead of an error.
+  const [modelDoesTools, setModelDoesTools] = useState(false);
+  const providerDoesTools = aiChatModelProvider === 'Ollama' && !!ollamaBaseUrl;
+  const agentSupported = providerDoesTools && modelDoesTools;
+  useEffect(() => {
+    let current = true;
+    if (!providerDoesTools || !aiChatModelString) {
+      setModelDoesTools(false);
+      return;
+    }
+    ollamaModelSupportsTools(
+      { mode: ollamaMode || 'local', baseUrl: ollamaBaseUrl || '', apiKey: ollamaApiKey || '' },
+      aiChatModelString
+    )
+      .then(can => {
+        if (current) {
+          setModelDoesTools(can);
+        }
+      })
+      .catch(() => {
+        if (current) {
+          setModelDoesTools(false);
+        }
+      });
+    return () => {
+      current = false;
+    };
+  }, [providerDoesTools, aiChatModelString, ollamaBaseUrl, ollamaMode, ollamaApiKey]);
 
   // The editor's Enter handler is registered once, when the editor mounts, so it keeps the state
   // from that first render. Refs give the send path the current choices instead of the old ones.
   const agentEnabledRef = useRef(agentEnabled);
+  const agentSupportedRef = useRef(agentSupported);
+  const agentToolsRef = useRef(agentTools);
   const agentApprovalRef = useRef(agentApproval);
   const pendingApprovalRef = useRef(pendingApproval);
   useEffect(() => {
     agentEnabledRef.current = agentEnabled;
-  }, [agentEnabled]);
+    agentSupportedRef.current = agentSupported;
+    agentToolsRef.current = agentTools;
+  }, [agentEnabled, agentSupported, agentTools]);
   useEffect(() => {
     agentApprovalRef.current = agentApproval;
   }, [agentApproval]);
@@ -490,18 +533,67 @@ export function Chat({
   // A finished step needs no line of its own: the one written when it started already says it.
   const agentStepLine = (step: IAgentStep): string => {
     if (step.status === 'running') {
-      return `\n\n_${step.label}…_\n\n`;
+      return `\n\n> _${step.label}…_\n\n`;
     }
     if (step.status === 'error') {
-      return `\n\n_${step.label} — failed: ${step.detail}_\n\n`;
+      return `\n\n> _${step.label} — failed: ${step.detail}_\n\n`;
     }
     if (step.status === 'skipped') {
-      return `\n\n_${step.label} — skipped_\n\n`;
+      return `\n\n> _${step.label} — skipped_\n\n`;
     }
     return '';
   };
 
-  const runWebAgent = async (
+  /** The tools the AI may reach for right now, following the menu next to the send button. */
+  const toolsForRun = () => {
+    const choice = agentToolsRef.current;
+    return [
+      ...(choice.notebook ? createNotebookTools({ tracker: notebookTracker }) : []),
+      ...(choice.environment
+        ? createEnvTools({ tracker: notebookTracker, onInstalled: () => forgetEnvironment() })
+        : []),
+      ...(choice.web ? webTools : [])
+    ];
+  };
+
+  /** Everything the model should know about where it is working, for this run. */
+  const guidanceForRun = async (): Promise<string> => {
+    const choice = agentToolsRef.current;
+    const parts = [TOOL_GUIDANCE, OBEDIENCE_GUIDANCE];
+    if (choice.notebook) {
+      parts.push(NOTEBOOK_STATE_GUIDANCE);
+    }
+    if (choice.environment) {
+      parts.push(ENVIRONMENT_GUIDANCE);
+    }
+    if (choice.notebook || choice.environment) {
+      parts.push(DISPLAY_GUIDANCE);
+    }
+    if (choice.web) {
+      parts.push(WEB_GUIDANCE);
+    }
+    const environment = choice.environment ? await environmentContext(notebookTracker) : '';
+    if (environment) {
+      parts.push(`This notebook is running in:\n${environment}`);
+    }
+    return parts.join('\n\n');
+  };
+
+  /**
+   * Whether this particular call waits for a click.
+   *
+   * Looking something up and rewriting a cell are not the same kind of act, so the middle
+   * setting tells them apart: read freely, ask before anything changes.
+   */
+  const needsApproval = (tool: IAgentTool): boolean => {
+    if (tool.alwaysAsk) {
+      return true;
+    }
+    const mode = agentApprovalRef.current;
+    return mode === 'ask' ? true : mode === 'changes' ? tool.risk === 'write' : false;
+  };
+
+  const runAgent = async (
     formattedMessages: any[],
     signal: AbortSignal,
     topSimilarities: string[],
@@ -509,15 +601,6 @@ export function Chat({
     selectedCode: string
   ) => {
     const connection = { mode: ollamaMode || 'local', baseUrl: ollamaBaseUrl || '', apiKey: ollamaApiKey || '' };
-    if (!(await ollamaModelSupportsTools(connection, aiChatModelString))) {
-      renderChat(
-        `ERROR: ${aiChatModelString} can't search the web, because it doesn't support tool calling. ` +
-          'Pick a model that does (gpt-oss and qwen3 do), or switch web search off.'
-      );
-      setIsAiGenerating(false);
-      setReferenceSource('');
-      return;
-    }
 
     // The same notebook context the normal chat adds, so answers still know about your cells
     const lastMessage = formattedMessages[formattedMessages.length - 1];
@@ -531,7 +614,7 @@ export function Chat({
       selectedCode
     );
     const messages = [
-      { role: 'system', content: `${CHAT_SYSTEM_MESSAGE}\n\n${AGENT_SYSTEM_MESSAGE}` },
+      { role: 'system', content: `${CHAT_SYSTEM_MESSAGE}\n\n${await guidanceForRun()}` },
       // Images aren't passed on: tool calling and images can't be combined in one Ollama request
       ...formattedMessages.slice(1, -1).map(msg => ({ role: msg.role, content: asText(msg.content) })),
       { role: 'user', content: question }
@@ -542,8 +625,10 @@ export function Chat({
         connection,
         model: aiChatModelString,
         messages,
-        tools: webTools,
+        tools: toolsForRun(),
         signal,
+        // Editing and running cells takes more turns than answering a question does
+        maxSteps: agentToolsRef.current.notebook ? 18 : DEFAULT_MAX_STEPS,
         onText: renderChat,
         onStep: step => {
           setAgentStatus(step.status === 'running' ? step.label : '');
@@ -552,11 +637,10 @@ export function Chat({
             renderChat(line);
           }
         },
-        approve:
-          agentApprovalRef.current === 'ask'
-            ? (tool, args) =>
-                new Promise<boolean>(resolve => setPendingApproval({ label: tool.label(args), resolve }))
-            : undefined
+        approve: (tool, args) =>
+          needsApproval(tool)
+            ? new Promise<boolean>(resolve => setPendingApproval({ label: tool.label(args), resolve }))
+            : Promise.resolve(true)
       });
     } finally {
       setAgentStatus('');
@@ -623,6 +707,18 @@ export function Chat({
       setStopGeneration(() => () => controller.abort());
 
       (async () => {
+        // Even without tools, an answer written for the wrong Python is worse than no answer
+        const environment = await environmentContext(notebookTracker);
+        formattedMessages[0].content = [
+          CHAT_SYSTEM_MESSAGE,
+          OBEDIENCE_GUIDANCE,
+          DISPLAY_GUIDANCE,
+          ENVIRONMENT_GUIDANCE,
+          environment ? `This notebook is running in:\n${environment}` : ''
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+
         const topSimilarities = await getTopSimilarities(
           editorValueFromEvent,
           embeddings,
@@ -633,8 +729,8 @@ export function Chat({
           codeMatchThreshold
         );
 
-        if (agentEnabledRef.current && agentSupported) {
-          await runWebAgent(formattedMessages, signal, topSimilarities, activeCellCode, selectedCode);
+        if (agentEnabledRef.current && agentSupportedRef.current) {
+          await runAgent(formattedMessages, signal, topSimilarities, activeCellCode, selectedCode);
           return;
         }
 
@@ -715,8 +811,20 @@ export function Chat({
       setStopGeneration(() => () => controller.abort());
 
       (async () => {
-        if (agentEnabledRef.current && agentSupported) {
-          await runWebAgent(formattedMessages, signal, [], '', '');
+        // "Without context" means without your code, not without knowing which Python this is
+        const environment = await environmentContext(notebookTracker);
+        formattedMessages[0].content = [
+          CHAT_SYSTEM_MESSAGE,
+          OBEDIENCE_GUIDANCE,
+          DISPLAY_GUIDANCE,
+          ENVIRONMENT_GUIDANCE,
+          environment ? `This notebook is running in:\n${environment}` : ''
+        ]
+          .filter(Boolean)
+          .join('\n\n');
+
+        if (agentEnabledRef.current && agentSupportedRef.current) {
+          await runAgent(formattedMessages, signal, [], '', '');
           return;
         }
 
@@ -1259,42 +1367,41 @@ export function Chat({
             />
           </Box>
           {isAiGenerating ? (
-            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
-              <button className="remove-button" onClick={cancelGeneration} title="Cancel">
-                Cancel <span style={{ fontSize: '0.8em' }}>Esc</span>
-              </button>
-              <Typography
-                sx={{
-                  marginRight: 'var(--jp-ui-margin, 10px)',
-                  marginTop: 'var(--jp-ui-margin, 10px)',
-                  fontSize: '0.885rem'
-                }}
-              >
-                {agentStatus || 'Generating AI response...'}
-              </Typography>
+            <div className="chat-working">
+              <div className="chat-working-line">
+                <button className="remove-button" onClick={cancelGeneration} title="Cancel">
+                  Cancel <span style={{ fontSize: '0.8em' }}>Esc</span>
+                </button>
+                <span className="chat-working-status">{agentStatus || 'Generating AI response...'}</span>
+              </div>
               {pendingApproval && (
-                <Box sx={{ display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '8px', marginTop: '10px' }}>
-                  <button
-                    className="jp-Dialog-button jp-mod-accept jp-mod-styled"
-                    onClick={() => {
-                      pendingApproval.resolve(true);
-                      setPendingApproval(null);
-                    }}
-                  >
-                    Allow
-                  </button>
-                  <button
-                    className="jp-Dialog-button jp-mod-reject jp-mod-styled"
-                    onClick={() => {
-                      pendingApproval.resolve(false);
-                      setPendingApproval(null);
-                    }}
-                  >
-                    Skip
-                  </button>
-                </Box>
+                // The whole request is shown, not just "a tool": the answer to "may I run cell 4"
+                // and to "may I install gymnasium" should never be given to the wrong question.
+                <div className="chat-approval">
+                  <p className="chat-approval-ask">{pendingApproval.label}</p>
+                  <div className="chat-approval-buttons">
+                    <button
+                      className="jp-Dialog-button jp-mod-accept jp-mod-styled"
+                      onClick={() => {
+                        pendingApproval.resolve(true);
+                        setPendingApproval(null);
+                      }}
+                    >
+                      Allow
+                    </button>
+                    <button
+                      className="jp-Dialog-button jp-mod-reject jp-mod-styled"
+                      onClick={() => {
+                        pendingApproval.resolve(false);
+                        setPendingApproval(null);
+                      }}
+                    >
+                      Skip
+                    </button>
+                  </div>
+                </div>
               )}
-            </Box>
+            </div>
           ) : (
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
               <div className="submit-button-container">
@@ -1545,15 +1652,24 @@ export function Chat({
                 </div>
               )}
               <AgentButton
-                enabled={agentEnabled}
+                tools={agentTools}
                 approval={agentApproval}
                 supported={agentSupported}
-                unsupportedReason="Web search works with Ollama models for now."
+                unsupportedReason={
+                  providerDoesTools
+                    ? `${aiChatModelString} cannot use tools. Models that can include gpt-oss and qwen3.`
+                    : 'Tools work with Ollama models for now.'
+                }
                 onChange={change => {
-                  if (change.enabled !== undefined) {
-                    setAgentEnabled(change.enabled);
-                    writeAgentPref('pretzel-agent-enabled', String(change.enabled));
-                    posthog.capture('Chat Web Search Toggled', { enabled: change.enabled });
+                  if (change.tools) {
+                    setAgentTools(previous => {
+                      const updated = { ...previous, ...change.tools };
+                      writeAgentPref('pretzel-agent-notebook', String(updated.notebook));
+                      writeAgentPref('pretzel-agent-environment', String(updated.environment));
+                      writeAgentPref('pretzel-agent-enabled', String(updated.web));
+                      return updated;
+                    });
+                    posthog.capture('Chat Agent Tools Changed', change.tools);
                   }
                   if (change.approval) {
                     setAgentApproval(change.approval);
