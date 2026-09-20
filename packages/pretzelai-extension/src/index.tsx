@@ -498,32 +498,45 @@ const extension: JupyterFrontEndPlugin<void> = {
       }
     });
 
+    // activeCellChanged fires every time the selection moves, so a cell you come back to would
+    // collect another output listener each time, and those listeners would go on firing after the
+    // cell itself had been thrown away — which is how a closed notebook ends up raising errors.
+    const watchedForErrors = new WeakSet<CodeCellModel>();
+
     notebookTracker.activeCellChanged.connect((sender, cell) => {
-      if (cell?.model?.type === 'code') {
-        const codeCellModel = cell.model as CodeCellModel;
-        if (codeCellModel.outputs) {
-          codeCellModel.outputs.changed.connect(() => {
-            const outputs = codeCellModel.outputs as OutputAreaModel;
-            const errorOutput = findErrorOutput(outputs);
-            if (errorOutput) {
-              const outputElements = cell.node.querySelectorAll('.jp-RenderedText.jp-mod-trusted.jp-OutputArea-output');
-              const outputElement = outputElements[outputElements.length - 1];
-              if (outputElement) {
-                addFixErrorButton(outputElement as HTMLElement, codeCellModel);
-              }
+      if (cell?.model?.type !== 'code') {
+        return;
+      }
+      const codeCellModel = cell.model as CodeCellModel;
+      if (codeCellModel.outputs && !watchedForErrors.has(codeCellModel)) {
+        watchedForErrors.add(codeCellModel);
+        const onOutputsChanged = () => {
+          if (cell.isDisposed || codeCellModel.isDisposed) {
+            return;
+          }
+          const outputs = codeCellModel.outputs as OutputAreaModel;
+          const errorOutput = findErrorOutput(outputs);
+          if (errorOutput) {
+            const outputElements = cell.node.querySelectorAll('.jp-RenderedText.jp-mod-trusted.jp-OutputArea-output');
+            const outputElement = outputElements[outputElements.length - 1];
+            if (outputElement) {
+              addFixErrorButton(outputElement as HTMLElement, codeCellModel);
             }
-          });
-        }
-        if (cell.node) {
-          addAskAIButton(cell);
-        }
+          }
+        };
+        codeCellModel.outputs.changed.connect(onOutputsChanged);
+        cell.disposed.connect(() => codeCellModel.outputs?.changed.disconnect(onOutputsChanged));
+      }
+      if (cell.node) {
+        addAskAIButton(cell);
       }
     });
 
     function findErrorOutput(outputs: OutputAreaModel): IOutputModel | undefined {
       for (let i = 0; i < outputs.length; i++) {
+        // A model being torn down can report a length whose entries have already gone
         const output = outputs.get(i);
-        if (output.type === 'error') {
+        if (output?.type === 'error') {
           return output;
         }
       }
@@ -597,7 +610,9 @@ const extension: JupyterFrontEndPlugin<void> = {
      */
     function hideAskAIWhenCodeReachesIt(cell: Cell<ICellModel>, buttonContainer: HTMLElement) {
       const update = () => {
-        if (!buttonContainer.isConnected) {
+        // The cell can be thrown away between the change and this measurement — closing its
+        // notebook, for one — and a disposed cell has no node left to measure
+        if (cell.isDisposed || !buttonContainer.isConnected) {
           stop();
           return;
         }
@@ -626,9 +641,13 @@ const extension: JupyterFrontEndPlugin<void> = {
         window.removeEventListener('resize', scheduled);
       };
 
+      if (cell.isDisposed || !cell.model) {
+        return;
+      }
       // Typing changes the shared model; contentChanged only covers outputs and metadata
       cell.model.sharedModel.changed.connect(scheduled);
       window.addEventListener('resize', scheduled);
+      cell.disposed.connect(stop);
       scheduled();
     }
 
