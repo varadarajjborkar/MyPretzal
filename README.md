@@ -122,6 +122,8 @@ rm -f jupyterlab/static/*.js.map
 git add -A -f jupyterlab/static jupyterlab/schemas jupyterlab/themes jupyterlab/staging/yarn.lock
 ```
 
+Don't skip the `node yarn.js install` line. The build reads a *copy* of the extension inside `jupyterlab/staging/node_modules`, and that step is what refreshes it. Without it the build quietly packages the old code, and `git status` shows nothing changed.
+
 ## Feedback
 
 Questions, bugs or ideas: [borkarvaradaraj@gmail.com](mailto:borkarvaradaraj@gmail.com)
