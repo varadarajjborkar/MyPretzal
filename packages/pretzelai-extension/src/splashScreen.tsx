@@ -102,7 +102,9 @@ function createCustomDialog() {
   const buttons = dialog.node.querySelectorAll('button.jp-mod-styled');
   buttons.forEach(button => button.classList.remove('jp-mod-styled'));
 
-  dialog.launch();
+  // Closing the splash calls Dialog.flush(), which rejects this promise. Without a catch that
+  // shows up in the console as an "undefined" error on every first run.
+  dialog.launch().catch(() => undefined);
 }
 
 function removeSplashScreen() {
