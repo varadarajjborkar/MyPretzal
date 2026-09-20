@@ -46,7 +46,7 @@ export function getOllamaConnection(ollamaProvider: any): IOllamaConnection {
  */
 export async function ollamaFetch(
   connection: IOllamaConnection,
-  endpoint: 'tags' | 'chat' | 'me',
+  endpoint: 'tags' | 'chat' | 'me' | 'show',
   payload?: object,
   signal?: AbortSignal
 ): Promise<Response> {
@@ -108,16 +108,71 @@ export async function streamOllamaChat(
   signal?: AbortSignal,
   options?: Record<string, any>
 ): Promise<AsyncIterable<string>> {
-  const response = await ollamaFetch(connection, 'chat', { model, messages, stream: true, options }, signal);
+  const stream = await streamOllamaChatParts(connection, model, messages, { signal, options });
+  return (async function* () {
+    for await (const part of stream) {
+      if (part.content) {
+        yield part.content;
+      }
+    }
+  })();
+}
+
+/** One piece of a streamed Ollama reply: some text, and/or tools the model wants to call. */
+export interface IOllamaChatPart {
+  content: string;
+  toolCalls: IOllamaToolCall[];
+  done: boolean;
+}
+
+export interface IOllamaToolCall {
+  function: { name: string; arguments: Record<string, any> };
+}
+
+/**
+ * Stream an Ollama chat reply in full, including any tool calls the model makes.
+ *
+ * `tools` are JSON-schema tool definitions. Models without the `tools` capability ignore them,
+ * so the caller should check the model first (see `ollamaModelSupportsTools`).
+ */
+export async function streamOllamaChatParts(
+  connection: IOllamaConnection,
+  model: string,
+  messages: any[],
+  { tools, options, signal }: { tools?: any[]; options?: Record<string, any>; signal?: AbortSignal } = {}
+): Promise<AsyncIterable<IOllamaChatPart>> {
+  const payload: Record<string, any> = { model, messages, stream: true, options };
+  if (tools?.length) {
+    payload.tools = tools;
+  }
+  const response = await ollamaFetch(connection, 'chat', payload, signal);
   if (!response.ok) {
     throw new Error(await getOllamaErrorMessage(response));
   }
   return readOllamaChatStream(response.body!);
 }
 
+/**
+ * Ask Ollama whether a model can call tools. Models that can't will happily ignore a tool
+ * definition and answer from memory instead, which looks like the agent silently not working.
+ */
+export async function ollamaModelSupportsTools(connection: IOllamaConnection, model: string): Promise<boolean> {
+  try {
+    const response = await ollamaFetch(connection, 'show', { model });
+    if (!response.ok) {
+      return false;
+    }
+    const data = await response.json();
+    return Array.isArray(data?.capabilities) && data.capabilities.includes('tools');
+  } catch {
+    // If the check itself fails, let the request proceed and report the real error
+    return true;
+  }
+}
+
 // Ollama streams one JSON object per line. A line can be split across network chunks,
 // so partial lines are kept in the buffer until the rest arrives.
-async function* readOllamaChatStream(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
+async function* readOllamaChatStream(body: ReadableStream<Uint8Array>): AsyncGenerator<IOllamaChatPart> {
   const reader = body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
@@ -136,7 +191,11 @@ async function* readOllamaChatStream(body: ReadableStream<Uint8Array>): AsyncGen
       if (data.error) {
         throw new Error(`Ollama error: ${data.error}`);
       }
-      yield data.message?.content || '';
+      yield {
+        content: data.message?.content || '',
+        toolCalls: data.message?.tool_calls || [],
+        done: Boolean(data.done)
+      };
     }
   }
 }

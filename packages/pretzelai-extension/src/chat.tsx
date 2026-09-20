@@ -29,9 +29,12 @@ import { OpenAI } from 'openai';
 import posthog from 'posthog-js';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import pretzelSvg from '../style/icons/pretzel.svg';
-import { CHAT_SYSTEM_MESSAGE, chatAIStream } from './chatAIUtils';
+import { CHAT_SYSTEM_MESSAGE, chatAIStream, generateChatPrompt } from './chatAIUtils';
 import { describeChatError } from './chatErrors';
 import { RendermimeMarkdown } from './components/rendermime-markdown';
+import { AGENT_SYSTEM_MESSAGE, IAgentStep, runOllamaAgent } from './agent/agentLoop';
+import { webTools } from './agent/webTools';
+import { AgentApproval, AgentButton } from './components/AgentButton';
 import { ChatModelPicker } from './components/ChatModelPicker';
 import { globalState } from './globalState';
 import { getDefaultSettings } from './migrations/defaultSettings';
@@ -45,7 +48,7 @@ import {
 } from './utils';
 import { providersInfo } from './migrations/providerInfo';
 import { ImagePreview } from './components/ImagePreview';
-import { OllamaMode } from './ollama';
+import { OllamaMode, ollamaModelSupportsTools } from './ollama';
 
 loader.config({ monaco }); // BUG FIX - WAS PICKING UP OLD VERSION OF MONACO FROM JSDELIVR
 
@@ -126,6 +129,25 @@ const findOpenChat = (chats: IMessage[][], messages: IMessage[]): number => {
 };
 
 // Text box for renaming a chat in the history menu. Enter or clicking away saves, Esc cancels
+// Web search preferences live in the browser, not in Pretzel Settings: they are a working habit
+// that changes often, and they belong to the person rather than the project. localStorage can be
+// unavailable (private windows, blocked site data), so every access is guarded.
+const readAgentPref = (key: string): string => {
+  try {
+    return localStorage.getItem(key) ?? '';
+  } catch {
+    return '';
+  }
+};
+
+const writeAgentPref = (key: string, value: string): void => {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Remembering the choice is not worth breaking the chat over
+  }
+};
+
 function ChatNameInput({
   initialName,
   onSave,
@@ -425,6 +447,115 @@ export function Chat({
     base64ImagesRef.current = base64Images;
   }, [base64Images]);
 
+  // Web search ("agent mode"): the model may search the web and read pages before answering.
+  const [agentEnabled, setAgentEnabled] = useState(() => readAgentPref('pretzel-agent-enabled') === 'true');
+  const [agentApproval, setAgentApproval] = useState<AgentApproval>(() =>
+    readAgentPref('pretzel-agent-approval') === 'ask' ? 'ask' : 'auto'
+  );
+  // What the agent is doing right now, shown in place of "Generating AI response..."
+  const [agentStatus, setAgentStatus] = useState('');
+  const [pendingApproval, setPendingApproval] = useState<{
+    label: string;
+    resolve: (allowed: boolean) => void;
+  } | null>(null);
+  // Tool calling needs a provider that supports it; Ollama is the one wired up so far
+  const agentSupported = aiChatModelProvider === 'Ollama' && !!ollamaBaseUrl;
+
+  // The editor's Enter handler is registered once, when the editor mounts, so it keeps the state
+  // from that first render. Refs give the send path the current choices instead of the old ones.
+  const agentEnabledRef = useRef(agentEnabled);
+  const agentApprovalRef = useRef(agentApproval);
+  const pendingApprovalRef = useRef(pendingApproval);
+  useEffect(() => {
+    agentEnabledRef.current = agentEnabled;
+  }, [agentEnabled]);
+  useEffect(() => {
+    agentApprovalRef.current = agentApproval;
+  }, [agentApproval]);
+  useEffect(() => {
+    pendingApprovalRef.current = pendingApproval;
+  }, [pendingApproval]);
+
+  // Steps stay in the transcript so a saved chat still shows where its answer came from.
+  // A finished step needs no line of its own: the one written when it started already says it.
+  const agentStepLine = (step: IAgentStep): string => {
+    if (step.status === 'running') {
+      return `\n\n_${step.label}…_\n\n`;
+    }
+    if (step.status === 'error') {
+      return `\n\n_${step.label} — failed: ${step.detail}_\n\n`;
+    }
+    if (step.status === 'skipped') {
+      return `\n\n_${step.label} — skipped_\n\n`;
+    }
+    return '';
+  };
+
+  const runWebAgent = async (
+    formattedMessages: any[],
+    signal: AbortSignal,
+    topSimilarities: string[],
+    activeCellCode: string,
+    selectedCode: string
+  ) => {
+    const connection = { mode: ollamaMode || 'local', baseUrl: ollamaBaseUrl || '', apiKey: ollamaApiKey || '' };
+    if (!(await ollamaModelSupportsTools(connection, aiChatModelString))) {
+      renderChat(
+        `ERROR: ${aiChatModelString} can't search the web, because it doesn't support tool calling. ` +
+          'Pick a model that does (gpt-oss and qwen3 do), or switch web search off.'
+      );
+      setIsAiGenerating(false);
+      setReferenceSource('');
+      return;
+    }
+
+    // The same notebook context the normal chat adds, so answers still know about your cells
+    const lastMessage = formattedMessages[formattedMessages.length - 1];
+    const asText = (content: any) => (Array.isArray(content) ? content[0]?.text ?? '' : content);
+    const question = await generateChatPrompt(
+      asText(lastMessage.content),
+      setReferenceSource,
+      notebookTracker,
+      topSimilarities,
+      activeCellCode,
+      selectedCode
+    );
+    const messages = [
+      { role: 'system', content: `${CHAT_SYSTEM_MESSAGE}\n\n${AGENT_SYSTEM_MESSAGE}` },
+      // Images aren't passed on: tool calling and images can't be combined in one Ollama request
+      ...formattedMessages.slice(1, -1).map(msg => ({ role: msg.role, content: asText(msg.content) })),
+      { role: 'user', content: question }
+    ];
+
+    try {
+      await runOllamaAgent({
+        connection,
+        model: aiChatModelString,
+        messages,
+        tools: webTools,
+        signal,
+        onText: renderChat,
+        onStep: step => {
+          setAgentStatus(step.status === 'running' ? step.label : '');
+          const line = agentStepLine(step);
+          if (line) {
+            renderChat(line);
+          }
+        },
+        approve:
+          agentApprovalRef.current === 'ask'
+            ? (tool, args) =>
+                new Promise<boolean>(resolve => setPendingApproval({ label: tool.label(args), resolve }))
+            : undefined
+      });
+    } finally {
+      setAgentStatus('');
+      setPendingApproval(null);
+    }
+    setIsAiGenerating(false);
+    setReferenceSource('');
+  };
+
   const onSend = async (editorValueFromEvent = editorValue) => {
     if (editorValueFromEvent.trim() === '' || isAiGenerating) {
       return;
@@ -491,6 +622,11 @@ export function Chat({
           'no-match-id',
           codeMatchThreshold
         );
+
+        if (agentEnabledRef.current && agentSupported) {
+          await runWebAgent(formattedMessages, signal, topSimilarities, activeCellCode, selectedCode);
+          return;
+        }
 
         await chatAIStream({
           aiChatModelProvider,
@@ -569,6 +705,11 @@ export function Chat({
       setStopGeneration(() => () => controller.abort());
 
       (async () => {
+        if (agentEnabledRef.current && agentSupported) {
+          await runWebAgent(formattedMessages, signal, [], '', '');
+          return;
+        }
+
         await chatAIStream({
           aiChatModelProvider,
           aiChatModelString,
@@ -651,6 +792,10 @@ export function Chat({
 
   const cancelGeneration = () => {
     posthog.capture('prompt_chat cancel generation');
+    // A tool waiting for Allow/Skip would otherwise keep the run alive
+    pendingApprovalRef.current?.resolve(false);
+    setPendingApproval(null);
+    setAgentStatus('');
     setIsAiGenerating(false);
     stopGeneration();
     setReferenceSource('');
@@ -1116,8 +1261,30 @@ export function Chat({
                   fontSize: '0.885rem'
                 }}
               >
-                Generating AI response...
+                {agentStatus || 'Generating AI response...'}
               </Typography>
+              {pendingApproval && (
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: '6px', marginLeft: '8px', marginTop: '10px' }}>
+                  <button
+                    className="jp-Dialog-button jp-mod-accept jp-mod-styled"
+                    onClick={() => {
+                      pendingApproval.resolve(true);
+                      setPendingApproval(null);
+                    }}
+                  >
+                    Allow
+                  </button>
+                  <button
+                    className="jp-Dialog-button jp-mod-reject jp-mod-styled"
+                    onClick={() => {
+                      pendingApproval.resolve(false);
+                      setPendingApproval(null);
+                    }}
+                  >
+                    Skip
+                  </button>
+                </Box>
+              )}
             </Box>
           ) : (
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
@@ -1368,6 +1535,24 @@ export function Chat({
                   </div>
                 </div>
               )}
+              <AgentButton
+                enabled={agentEnabled}
+                approval={agentApproval}
+                supported={agentSupported}
+                unsupportedReason="Web search works with Ollama models for now."
+                onChange={change => {
+                  if (change.enabled !== undefined) {
+                    setAgentEnabled(change.enabled);
+                    writeAgentPref('pretzel-agent-enabled', String(change.enabled));
+                    posthog.capture('Chat Web Search Toggled', { enabled: change.enabled });
+                  }
+                  if (change.approval) {
+                    setAgentApproval(change.approval);
+                    writeAgentPref('pretzel-agent-approval', change.approval);
+                  }
+                }}
+                onClosed={() => editorRef.current?.focus()}
+              />
               <ChatModelPicker
                 settings={pretzelSettingsJSON}
                 provider={aiChatModelProvider}

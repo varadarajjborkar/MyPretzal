@@ -13,7 +13,7 @@ from tornado import web
 from tornado.iostream import StreamClosedError
 
 # Ollama endpoints the frontend may reach through the proxy, with their upstream HTTP method
-OLLAMA_ENDPOINTS = {"tags": "GET", "chat": "POST", "me": "POST"}
+OLLAMA_ENDPOINTS = {"tags": "GET", "chat": "POST", "me": "POST", "show": "POST"}
 
 # Generous read timeout: large cloud models can take a while before the first token
 OLLAMA_TIMEOUT = httpx.Timeout(10.0, read=300.0)

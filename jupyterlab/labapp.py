@@ -45,6 +45,12 @@ from .debuglog import DebugLogFileMixin
 from .extensions import MANAGERS as EXT_MANAGERS
 from .extensions.manager import PluginManager
 from .extensions.readonly import ReadOnlyExtensionManager
+from .handlers.agent_handler import (
+    AgentFetchHandler,
+    AgentSearchHandler,
+    agent_fetch_handler_path,
+    agent_search_handler_path,
+)
 from .handlers.announcements import (
     CheckForUpdate,
     CheckForUpdateABC,
@@ -900,6 +906,10 @@ class LabApp(NotebookConfigShimMixin, LabServerApp):
 
         # Pretzel AI: proxy for Ollama servers that don't allow browser requests (Ollama Cloud)
         handlers.append((ollama_proxy_handler_path, OllamaProxyHandler))
+
+        # Pretzel AI: web tools for the chat agent (the browser can't call these sites itself)
+        handlers.append((agent_search_handler_path, AgentSearchHandler))
+        handlers.append((agent_fetch_handler_path, AgentFetchHandler))
 
         # If running under JupyterHub, add more metadata.
         if "hub_prefix" in self.serverapp.tornado_settings:
