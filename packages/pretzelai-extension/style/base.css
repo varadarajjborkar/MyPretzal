@@ -378,15 +378,28 @@ body[data-jp-theme-light='false'] .cm-editor.ͼ1.ͼ2.ͼo.pretzel-new-code-genera
 
 #pretzelai-chat-panel .user-msg {
   background-color: var(--jp-layout-color2);
-  margin: 0 -16px 0 -16px;
-  padding-top: 5px;
-  padding-bottom: 5px;
-  padding-left: 16px;
+  border-left: 3px solid var(--jp-brand-color1);
+  margin: 8px -16px 0 -16px;
+  padding: 8px 16px 8px 13px;
 }
 
 #pretzelai-chat-panel .ai-msg {
-  padding-top: 5px;
-  padding-bottom: 5px;
+  margin: 0 -16px;
+  padding: 10px 16px 14px 16px;
+  border-bottom: 1px solid var(--jp-border-color2);
+}
+
+/* The agent's steps are a log of what it did, not part of the answer, so they read as an aside. */
+#pretzelai-chat-panel .jp-pretzelai-rendermime-markdown blockquote {
+  margin: 4px 0;
+  padding: 1px 0 1px 9px;
+  border-left: 2px solid var(--jp-border-color2);
+  color: var(--jp-ui-font-color2);
+  font-size: 0.8rem;
+}
+
+#pretzelai-chat-panel .jp-pretzelai-rendermime-markdown blockquote p {
+  margin: 2px 0;
 }
 
 #pretzelai-chat-panel .submit-button-container,
@@ -669,17 +682,41 @@ body.jp-mod-dark .cm-editor.cm-merge-b .cm-changedText {
 
 .jp-pretzelai-rendermime-markdown pre {
   position: relative;
+  overflow-x: auto;
+  border: 1px solid var(--jp-border-color2);
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+
+/* A narrow panel clips long lines, so the scrollbar has to be visible rather than implied */
+.jp-pretzelai-rendermime-markdown pre::-webkit-scrollbar {
+  height: 8px;
+}
+
+.jp-pretzelai-rendermime-markdown pre::-webkit-scrollbar-thumb {
+  background: var(--jp-border-color1);
+  border-radius: 4px;
 }
 
 .jp-pretzelai-rendermime-markdown .code-toolbar {
   position: absolute;
-  top: -1px;
-  right: -1px;
+  top: 3px;
+  right: 3px;
+  display: flex;
+  gap: 1px;
+  padding: 1px;
+  border: 1px solid var(--jp-border-color2);
+  border-radius: 4px;
+  background: var(--jp-layout-color1);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 15%);
   opacity: 0;
-  transition: opacity 0.3s ease;
+  transition: opacity 0.2s ease;
 }
 
-.jp-pretzelai-rendermime-markdown pre:hover .code-toolbar {
+/* Keyboard users never hover, so focus reveals it too */
+.jp-pretzelai-rendermime-markdown pre:hover .code-toolbar,
+.jp-pretzelai-rendermime-markdown .code-toolbar:focus-within {
   opacity: 1;
 }
 
@@ -828,4 +865,69 @@ body.jp-mod-dark .cm-editor.cm-merge-b .cm-changedText {
 /* Set when the cell's first line of code reaches the Ask AI button (see hideAskAIWhenCodeReachesIt) */
 .ask-ai-button-container.ask-ai-hidden {
   display: none;
+}
+
+/* While the AI is working: what it is doing, and what it wants permission for. */
+#pretzelai-chat-panel .chat-working {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+#pretzelai-chat-panel .chat-working-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+#pretzelai-chat-panel .chat-working-status {
+  font-size: 0.85rem;
+  color: var(--jp-ui-font-color2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* An approval has to say what is being approved, so it wraps rather than truncating. */
+#pretzelai-chat-panel .chat-approval {
+  border: 1px solid var(--jp-brand-color1);
+  border-radius: 4px;
+  background: var(--jp-layout-color2);
+  padding: 8px 10px;
+}
+
+#pretzelai-chat-panel .chat-approval-ask {
+  margin: 0 0 8px 0;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+#pretzelai-chat-panel .chat-approval-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+/* The in-cell fixer's offer to install what is missing, instead of rewriting the cell again. */
+.pretzel-install-offer {
+  border: 1px solid var(--jp-brand-color1);
+  border-radius: 4px;
+  background: var(--jp-layout-color2);
+  padding: 8px 10px;
+  margin: 4px 0;
+  max-width: 640px;
+}
+
+.pretzel-install-reason {
+  margin: 0 0 8px 0;
+  font-size: 0.85rem;
+  line-height: 1.35;
+  color: var(--jp-ui-font-color1);
+}
+
+.pretzel-install-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
