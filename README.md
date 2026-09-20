@@ -19,6 +19,12 @@ pip install "git+https://github.com/varadarajjborkar/MyPretzal.git"
 
 This repo is private, so run `gh auth login` and `gh auth setup-git` once first, so pip can read it.
 
+It goes quiet for a few minutes and shows no progress bar. That's normal: pip only draws a bar when it downloads a ready-made file of a known size. Here it copies this repo with git (pip passes `--quiet`, which hides git's own progress) and then builds the package. Add `-vv` to watch both:
+
+```bash
+pip install -vv "git+https://github.com/varadarajjborkar/MyPretzal.git"
+```
+
 ## Run
 
 ```bash
@@ -35,6 +41,47 @@ pretzel lab
 ```bash
 pip install --force-reinstall --no-deps "git+https://github.com/varadarajjborkar/MyPretzal.git"
 ```
+
+## Uninstall
+
+```bash
+source ~/pretzel-env/bin/activate
+pip uninstall pretzelai
+```
+
+The package is named `pretzelai`, not MyPretzal. To remove it and everything it installed in one go, delete the environment instead: `rm -rf ~/pretzel-env`.
+
+Either way your own data stays: settings and keys in `~/.jupyter`, and each project's chats in its `.pretzel/chat_history.json`.
+
+## Shortcuts
+
+Optional. Add this to `~/.zshrc` for one-word install, update, remove and run, with the progress shown:
+
+```bash
+pretzel-install() {
+  local repo="git+https://github.com/varadarajjborkar/MyPretzal.git"
+  local pip="${VIRTUAL_ENV:-$HOME/pretzel-env}/bin/pip"
+  if [ ! -x "$pip" ]; then
+    echo "No environment yet. Make one first:  python3 -m venv ~/pretzel-env"
+    return 1
+  fi
+  if "$pip" show pretzelai >/dev/null 2>&1; then
+    "$pip" install -vv --force-reinstall --no-deps "$repo"
+  else
+    "$pip" install -vv "$repo"
+  fi
+}
+
+pretzel-uninstall() {
+  "${VIRTUAL_ENV:-$HOME/pretzel-env}/bin/pip" uninstall pretzelai
+}
+
+pretzel-run() {
+  "${VIRTUAL_ENV:-$HOME/pretzel-env}/bin/pretzel" lab "$@"
+}
+```
+
+Then `pretzel-install` installs or updates, and `pretzel-run` starts the app in the current folder without activating anything. They use whichever environment is active, or `~/pretzel-env` if none is.
 
 ## Use a project's own packages
 
