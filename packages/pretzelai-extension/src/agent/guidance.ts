@@ -34,6 +34,22 @@ export const DISPLAY_GUIDANCE = `What a notebook can show:
   - matplotlib: with a desktop backend the figure opens in a window. \`%matplotlib inline\` gives static plots in the cell, \`%matplotlib widget\` gives interactive ones (needs ipympl).
   - pygame: \`pygame.display\` is a native window. Draw to a surface and show the frames.
   - VPython: works only through its own Jupyter output, and \`canvas()\` waits for the front end — outside a notebook front end it hangs.
+
+Drawing libraries that bind to the browser (VPython above all) have rules that cost people hours,
+because nothing ever raises an error — the cell runs, prints, and simply draws nothing:
+- VPython makes its browser connection when \`vpython\` is FIRST imported, in that kernel, against
+  that page. Reload the page or reopen the notebook and that connection is dead: from then on
+  nothing it draws appears anywhere, not even a brand-new \`canvas()\`. The cure is Restart Kernel
+  and run the drawing cell again — no rewrite of the code can fix it, so do not try. If a VPython
+  cell runs without error and shows nothing, say this first.
+- \`scene\` is ONE canvas per kernel. The picture appears in the output of the cell that first
+  created it; later cells that draw on \`scene\` add to that same canvas far up the notebook and
+  look empty themselves. To put a picture under the cell being run, make an explicit
+  \`c = canvas()\` there and pass \`canvas=c\` to the objects.
+- \`while True: rate(30)\` never ends: the cell stays running until it is interrupted, and nothing
+  after it can run. Prefer a bounded loop (\`for _ in range(...)\`) so the notebook stays usable.
+- There is no \`%load_ext vpython\`. It is not an IPython extension, and trying it only prints a
+  message that sends you looking in the wrong place.
   - plotly, bokeh, altair: need their notebook renderer switched on before anything appears.
 - \`input()\` does work, but a cell waiting on it looks frozen to the user. Say so when you use it.
 - An unbounded \`while True\` animation loop never returns and blocks every other cell until it is interrupted. Give it an end, or drive it from a widget.`;
@@ -70,7 +86,8 @@ export const CODE_ENVIRONMENT_GUIDANCE = `Environment rules:
 export const CODE_DISPLAY_GUIDANCE = `What this cell can show:
 - Only inline output is visible: printed text, the value of the last expression, and rich output a library renders on purpose.
 - A native window does not appear in a notebook and usually freezes the cell. Use the inline form: gymnasium \`render_mode="rgb_array"\` and show the frames rather than \`"human"\`; display the array rather than \`cv2.imshow\`; \`%matplotlib inline\` or \`%matplotlib widget\` rather than a desktop backend; frames rather than \`pygame.display\`.
-- No unbounded \`while True\` loop: it blocks the kernel until someone interrupts it.`;
+- No unbounded \`while True\` loop: it blocks the kernel until someone interrupts it.
+- VPython binds to the browser when it is first imported. If a VPython cell runs and draws nothing, the page has been reloaded since then and only Restart Kernel fixes it — rewriting the code cannot. \`scene\` is one canvas per kernel, so make \`c = canvas()\` in this cell to draw here.`;
 
 export const CODE_FIX_GUIDANCE = `Fixing this error:
 - Fix the cause, not the symptom. Do not wrap the failure in try/except to make it go away.

@@ -72,6 +72,23 @@ def in_use():
         out[name] = version if isinstance(version, str) else (dist_version(name) or '?')
     return dict(list(out.items())[:40])
 
+# Has this kernel outlived the page looking at it?
+#
+# A kernel survives a browser reload; anything in it that had wired itself to the old page does
+# not. VPython is the worst case: after a reload it draws into a connection that no longer
+# exists, silently, for ever. We leave a token in a private module (never in the user's
+# namespace) and compare it with the one this page carries.
+def page_check(token):
+    import types
+    mod = sys.modules.get('_pretzel_page')
+    if mod is None:
+        mod = types.ModuleType('_pretzel_page')
+        sys.modules['_pretzel_page'] = mod
+    seen = getattr(mod, 'token', None)
+    mod.token = token
+    return {'earlier_page': seen is not None and seen != token,
+            'first_seen': seen is None}
+
 report = {
     'python': platform.python_version(),
     'implementation': platform.python_implementation(),
@@ -91,6 +108,9 @@ report = {
     'package_count': len(list(md.distributions())),
     'gui_toolkits': [n for n in ('tkinter', 'PyQt5', 'PyQt6', 'PySide6', 'wx') if importable(n)],
     'imported': in_use(),
+    'page': page_check(__PAGE__),
+    # Libraries that talk to the browser directly and so cannot survive a reload
+    'browser_bound': [n for n in ('vpython', 'glowscript') if n in sys.modules],
 }
 
 wanted = __WANTED__

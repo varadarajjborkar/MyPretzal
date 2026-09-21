@@ -33,15 +33,26 @@ export interface IEnvReport {
   package_count: number;
   gui_toolkits: string[];
   imported: Record<string, string>;
+  page?: { earlier_page: boolean; first_seen: boolean };
+  browser_bound?: string[];
   packages?: Record<
     string,
     { version: string | null; importable: boolean; elsewhere?: { version: string; path: string }[] }
   >;
 }
 
+/**
+ * One token per page load.
+ *
+ * The module is evaluated once when the page loads, so this value survives every notebook and
+ * every kernel in this tab, and changes the moment the tab is reloaded — which is exactly the
+ * event that breaks a kernel's link to the browser.
+ */
+const PAGE_TOKEN = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+
 const probeFor = (wanted: string[]): string =>
   `exec(compile(${JSON.stringify(
-    ENV_PROBE.replace('__WANTED__', JSON.stringify(wanted))
+    ENV_PROBE.replace('__WANTED__', JSON.stringify(wanted)).replace('__PAGE__', JSON.stringify(PAGE_TOKEN))
   )}, '<pretzel-env>', 'exec'), {})`;
 
 /** Read the kernel's environment, optionally asking about particular packages. */
@@ -73,6 +84,16 @@ export const describeEnvironment = (report: IEnvReport): string => {
   const imported = Object.entries(report.imported || {});
   if (imported.length) {
     lines.push(`Already imported in this kernel: ${imported.map(([name, v]) => `${name} ${v}`).join(', ')}`);
+  }
+  // The one piece of state that makes working code draw nothing, with no error to go on
+  if (report.page?.earlier_page && report.browser_bound?.length) {
+    lines.push(
+      `*STALE DISPLAY CONNECTION* This kernel was already running before this page was loaded, and ` +
+        `${report.browser_bound.join(' and ')} is imported in it. ${report.browser_bound[0]} wires itself to the ` +
+        `browser at import time, and that wiring died with the old page: anything it draws from now on appears ` +
+        `NOWHERE, silently, however the code is written. Tell the user to restart the kernel (Kernel > Restart ` +
+        `Kernel) and run the drawing cell again. Do not rewrite their code — the code is not the problem.`
+    );
   }
   return lines.join('\n');
 };
