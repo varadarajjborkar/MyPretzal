@@ -56,8 +56,12 @@ The **Tools** button at the bottom of the chat decides what the AI may reach for
 **Before it acts**, in the same menu:
 
 - *Let it run* — no interruptions.
-- *Ask before it changes anything* **(default)** — it reads freely, but editing a cell, running code or installing waits for **Allow** or **Skip**.
+- *Ask before it changes anything* **(default)** — it reads freely, but editing a cell, running code or installing waits for you.
 - *Ask before every step* — every call waits.
+
+When it does ask, **you see the code first**: the cell as it is against the cell as it would be, in the same red and green Cmd+K uses, with **Accept**, **Accept and run**, **Reject** and **Edit prompt** underneath. *Edit prompt* stops the run and puts your message back in the box, which is usually quicker than arguing with a wrong change.
+
+**Always allow in \<folder\>** on that card stops the asking for changes while you work in that folder — and nowhere else. Turn it off again from the Tools menu. Installing a package is never covered by it, and neither is running a cell that installs one: *Running cell 1 — it installs packages* asks even on *Let it run*.
 
 **Installing a package always asks**, whichever of those you pick, because it changes your machine outside the notebook.
 
@@ -84,6 +88,14 @@ This is there because no rewrite of an import statement has ever installed anyth
 Some libraries open a window on your desktop rather than drawing in the notebook — `gymnasium` with `render_mode="human"`, `cv2.imshow`, `pygame.display`, matplotlib with a desktop backend. In a notebook that window either appears somewhere you aren't looking or freezes the cell, and if your kernel is on another machine it never appears at all.
 
 The AI is told this, and told the inline alternative for each of them, so it should offer you `render_mode="rgb_array"` and a frame display rather than code that silently does nothing.
+
+### VPython, and the hour it costs people
+
+VPython draws through a live connection to the page, made when `vpython` is first imported in that kernel. **Reload the page and that connection is dead**: from then on nothing it draws appears anywhere — not even a brand-new `canvas()` — and no error is raised. The cell runs, prints, and shows nothing. Only **Kernel → Restart Kernel** brings it back; no rewrite of the code can, which is exactly why asking an AI to fix it turns into a loop.
+
+Pretzel now notices. The kernel is asked whether it was already running before this page was loaded, and if a browser-bound library is imported in it the AI is told plainly that the connection is stale and that restarting the kernel — not rewriting the code — is the fix.
+
+Two more rules it is told about: `scene` is one canvas per kernel, so the picture appears under the cell that *first* made it and later cells that draw on `scene` look empty — make a `canvas()` in the cell where you want the picture. And `while True: rate(30)` never ends, so prefer a bounded loop.
 
 ## Update
 

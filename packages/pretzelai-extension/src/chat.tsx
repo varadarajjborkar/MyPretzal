@@ -36,6 +36,9 @@ import { DEFAULT_MAX_STEPS, IAgentStep, runOllamaAgent, TOOL_GUIDANCE, WEB_GUIDA
 import { IAgentTool, webTools } from './agent/webTools';
 import { createNotebookTools } from './agent/notebookTools';
 import { createEnvTools, environmentContext, forgetEnvironment, mentionNote } from './agent/envTools';
+import { ApprovalCard, ApprovalChoice } from './components/ApprovalCard';
+import { IToolPreview } from './agent/webTools';
+import { runCellNow } from './agent/notebookTools';
 import { DISPLAY_GUIDANCE, ENVIRONMENT_GUIDANCE, NOTEBOOK_STATE_GUIDANCE, OBEDIENCE_GUIDANCE } from './agent/guidance';
 import { AgentApproval, AgentButton, IAgentTools } from './components/AgentButton';
 import { ChatModelPicker } from './components/ChatModelPicker';
@@ -477,8 +480,35 @@ export function Chat({
   const [agentStatus, setAgentStatus] = useState('');
   const [pendingApproval, setPendingApproval] = useState<{
     label: string;
+    preview: IToolPreview | null;
+    /** True for the calls that ask every time — installing, and running a cell that installs. */
+    alwaysAsks: boolean;
     resolve: (allowed: boolean) => void;
   } | null>(null);
+  // Set when the user chooses "Accept and run", and acted on once the tool has finished
+  const runAfterRef = useRef<number | null>(null);
+
+  /**
+   * The folder whose settings these are.
+   *
+   * "Always allow" is a decision about the work in front of you, not about every notebook you
+   * will ever open, so it is remembered against the folder the notebook is in and nowhere else.
+   */
+  const notebookFolder = (): string => {
+    const path = notebookTracker?.currentWidget?.context?.path ?? '';
+    const folder = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
+    return folder || 'this folder';
+  };
+  const alwaysKey = () => `pretzel-agent-always:${notebookFolder()}`;
+  // localStorage changing is not something React can see, so the menu is told to look again
+  const [alwaysTick, setAlwaysTick] = useState(0);
+  const alwaysAllowedHere = (): boolean => {
+    try {
+      return localStorage.getItem(alwaysKey()) === 'true';
+    } catch {
+      return false;
+    }
+  };
   // Tool calling needs a provider that supports it; Ollama is the one wired up so far
   // Tool calling needs a provider and a model that can do it. The model is asked once, when it
   // changes, so a model that cannot use tools quietly gets the ordinary chat instead of an error.
@@ -592,6 +622,10 @@ export function Chat({
     if (tool.alwaysAsk || tool.alwaysAskFor?.(args)) {
       return true;
     }
+    // "Always allow in this folder" covers changes, never installs — those are caught above
+    if (alwaysAllowedHere()) {
+      return false;
+    }
     const mode = agentApprovalRef.current;
     return mode === 'ask' ? true : mode === 'changes' ? tool.risk === 'write' : false;
   };
@@ -639,10 +673,24 @@ export function Chat({
           if (line) {
             renderChat(line);
           }
+          // "Accept and run" waits for the edit to be in the cell before running it
+          if (step.status === 'done' && runAfterRef.current !== null) {
+            const index = runAfterRef.current;
+            runAfterRef.current = null;
+            void runCellNow(notebookTracker, index);
+          }
         },
         approve: (tool, args) =>
           needsApproval(tool, args)
-            ? new Promise<boolean>(resolve => setPendingApproval({ label: tool.label(args), resolve }))
+            ? new Promise<boolean>(resolve =>
+                setPendingApproval({
+                  label: tool.label(args),
+                  // Built before the tool runs, so "before" is still the cell as it stands
+                  preview: tool.preview?.(args) ?? null,
+                  alwaysAsks: !!(tool.alwaysAsk || tool.alwaysAskFor?.(args)),
+                  resolve
+                })
+              )
             : Promise.resolve(true)
       });
     } finally {
@@ -916,6 +964,50 @@ export function Chat({
       }
     }
   }, [isAiGenerating]);
+
+  /**
+   * What each button on the approval card does.
+   *
+   * Accepting and rejecting are the obvious two. "Accept and run" waits for the edit to land
+   * before running the cell. "Always allow" is remembered for this folder only. "Edit prompt"
+   * stops the run and puts the message back in the box, because the fastest fix for a wrong
+   * change is usually a better question.
+   */
+  const handleApproval = (choice: ApprovalChoice) => {
+    const pending = pendingApproval;
+    if (!pending) {
+      return;
+    }
+    setPendingApproval(null);
+    if (choice === 'always') {
+      try {
+        localStorage.setItem(alwaysKey(), 'true');
+      } catch {
+        // A browser that will not remember it just asks again next time
+      }
+      setAlwaysTick(tick => tick + 1);
+      pending.resolve(true);
+      return;
+    }
+    if (choice === 'accept-run') {
+      runAfterRef.current = pending.preview?.index ?? null;
+      pending.resolve(true);
+      return;
+    }
+    if (choice === 'edit') {
+      pending.resolve(false);
+      const question = [...messages].reverse().find(message => message.role === 'user');
+      const content: any = question?.content;
+      const text = Array.isArray(content) ? content.find((item: any) => item.type === 'text')?.text ?? '' : content;
+      if (text) {
+        setEditorValue(String(text).replace(/ {2}\n/g, '\n'));
+      }
+      cancelGeneration();
+      editorRef.current?.focus();
+      return;
+    }
+    pending.resolve(choice === 'accept');
+  };
 
   const cancelGeneration = () => {
     posthog.capture('prompt_chat cancel generation');
@@ -1386,29 +1478,13 @@ export function Chat({
               {pendingApproval && (
                 // The whole request is shown, not just "a tool": the answer to "may I run cell 4"
                 // and to "may I install gymnasium" should never be given to the wrong question.
-                <div className="chat-approval">
-                  <p className="chat-approval-ask">{pendingApproval.label}</p>
-                  <div className="chat-approval-buttons">
-                    <button
-                      className="jp-Dialog-button jp-mod-accept jp-mod-styled"
-                      onClick={() => {
-                        pendingApproval.resolve(true);
-                        setPendingApproval(null);
-                      }}
-                    >
-                      Allow
-                    </button>
-                    <button
-                      className="jp-Dialog-button jp-mod-reject jp-mod-styled"
-                      onClick={() => {
-                        pendingApproval.resolve(false);
-                        setPendingApproval(null);
-                      }}
-                    >
-                      Skip
-                    </button>
-                  </div>
-                </div>
+                <ApprovalCard
+                  label={pendingApproval.label}
+                  preview={pendingApproval.preview}
+                  folder={notebookFolder()}
+                  canAlwaysAllow={!pendingApproval.alwaysAsks}
+                  onChoose={choice => handleApproval(choice)}
+                />
               )}
             </div>
           ) : (
@@ -1669,6 +1745,16 @@ export function Chat({
                     ? `${aiChatModelString} cannot use tools. Models that can include gpt-oss and qwen3.`
                     : 'Tools work with Ollama models for now.'
                 }
+                alwaysAllowed={alwaysTick >= 0 && alwaysAllowedHere()}
+                folder={notebookFolder()}
+                onClearAlways={() => {
+                  try {
+                    localStorage.removeItem(alwaysKey());
+                  } catch {
+                    // Nothing to clear if it could never be stored
+                  }
+                  setAlwaysTick(tick => tick + 1);
+                }}
                 onChange={change => {
                   if (change.tools) {
                     setAgentTools(previous => {

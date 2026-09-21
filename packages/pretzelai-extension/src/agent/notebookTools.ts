@@ -198,6 +198,26 @@ const insertPosition = (index: any, count: number): number => {
   return Number.isInteger(wanted) ? Math.max(0, Math.min(wanted, count)) : count;
 };
 
+/**
+ * Run one cell, for "Accept and run" in the chat panel.
+ *
+ * The agent's own run_cell tool reports back to the model; this is the user pressing a button,
+ * so it just runs and returns.
+ */
+export async function runCellNow(tracker: INotebookTracker | null, index: number): Promise<void> {
+  const panel = tracker?.currentWidget;
+  if (!panel || !panel.sessionContext?.session?.kernel) {
+    return;
+  }
+  const cell = panel.content.widgets[index];
+  if (!cell || cell.model.type !== 'code') {
+    return;
+  }
+  panel.content.activeCellIndex = index;
+  panel.content.deselectAll();
+  await NotebookActions.run(panel.content, panel.sessionContext);
+}
+
 export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INotebookToolOptions): IAgentTool[] {
   const overview: IAgentTool = {
     name: 'notebook_overview',
@@ -284,6 +304,20 @@ export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INoteboo
       required: ['index', 'source']
     },
     label: args => `Rewriting cell ${args?.index}`,
+    preview: args => {
+      try {
+        const cell = cellAt(panelOf(tracker), args?.index);
+        return {
+          where: `Cell ${args?.index}`,
+          before: cell.model.sharedModel.source,
+          after: String(args?.source ?? ''),
+          index: Number(args?.index),
+          runnable: cell.model.type === 'code'
+        };
+      } catch {
+        return null;
+      }
+    },
     run: async args => {
       const panel = panelOf(tracker);
       const cell = cellAt(panel, args?.index);
@@ -326,6 +360,18 @@ export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INoteboo
       const where = position >= count ? 'at the end' : `at position ${position}`;
       return `Adding ${what}${kind} cell ${where}`;
     },
+    preview: args => {
+      const count = tracker?.currentWidget?.content.widgets.length ?? 0;
+      const position = insertPosition(args?.index, count);
+      const kind = args?.cell_type === 'markdown' ? 'markdown' : 'code';
+      return {
+        where: `A new ${kind} cell ${position >= count ? 'at the end' : `at position ${position}`}`,
+        before: '',
+        after: String(args?.source ?? ''),
+        index: position,
+        runnable: kind === 'code' && !!String(args?.source ?? '').trim()
+      };
+    },
     run: async args => {
       const panel = panelOf(tracker);
       const model = panel.model;
@@ -358,6 +404,19 @@ export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INoteboo
       required: ['index']
     },
     label: args => `Deleting cell ${args?.index}`,
+    preview: args => {
+      try {
+        const cell = cellAt(panelOf(tracker), args?.index);
+        return {
+          where: `Cell ${args?.index}, which would be removed`,
+          before: cell.model.sharedModel.source,
+          after: '',
+          index: Number(args?.index)
+        };
+      } catch {
+        return null;
+      }
+    },
     run: async args => {
       const panel = panelOf(tracker);
       const cell = cellAt(panel, args?.index);
@@ -413,6 +472,15 @@ export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INoteboo
         installs = false;
       }
       return installs ? `Running cell ${args?.index} — it installs packages` : `Running cell ${args?.index}`;
+    },
+    preview: args => {
+      try {
+        const source = cellAt(panelOf(tracker), args?.index).model.sharedModel.source;
+        // Nothing is changing, so both sides are the same and it reads as plain code
+        return { where: `Cell ${args?.index}, which would run`, before: source, after: source, index: Number(args?.index) };
+      } catch {
+        return null;
+      }
     },
     run: async args => {
       const panel = panelOf(tracker);

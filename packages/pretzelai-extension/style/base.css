@@ -33,16 +33,24 @@
 .jp-cell-toolbar .ask-ai-button-container {
   position: absolute;
   right: 100%;
-  top: 50%;
-  transform: translateY(-50%);
+
+  /* Line up with the toolbar's own buttons rather than with the toolbar box. The box is 32px tall
+     but its icons are 29px and sit at the top, so centring on the box left this button a pixel and
+     a half low with a visible gap above it. Matching their height puts it in the same row. */
+  top: 0;
+  height: var(--pretzel-cell-toolbar-item-height, 29px);
+  display: flex;
+  align-items: center;
 
   /* The toolbar is narrow, so an absolutely positioned box inside it shrinks to fit and wraps the
      label onto two lines. These keep the button the size and shape it has always been. */
-  display: block;
   width: max-content;
-  height: auto;
   white-space: nowrap;
   margin-right: 8px;
+}
+
+.jp-cell-toolbar .ask-ai-button {
+  height: 100%;
 }
 
 /* If the button could not be placed in the toolbar, it at least disappears when the toolbar does */
@@ -60,11 +68,19 @@
   font-size: var(--jp-ui-font-size1, 12px);
 }
 
+/*
+ * Below the button, not above it.
+ *
+ * `.jp-InputArea` is `overflow: hidden`, so anything drawn above the cell's input is CLIPPED —
+ * which looked like the cell above was covering the tooltip, and which no amount of z-index can
+ * fix. Below the button it is inside the box that does the clipping, so it stays visible.
+ */
 .ask-ai-button-container .tooltip {
   position: absolute;
-  top: -30px;
+  top: calc(100% + 6px);
   left: 50%;
   transform: translateX(-40%);
+  z-index: 10;
   background-color: var(--jp-layout-color1);
   color: var(--jp-ui-font-color1);
   padding: 5px;
@@ -904,9 +920,61 @@ body.jp-mod-dark .cm-editor.cm-merge-b .cm-changedText {
   word-break: break-word;
 }
 
+#pretzelai-chat-panel .chat-approval-where {
+  margin: 0 0 4px 0;
+  font-size: 0.75rem;
+  color: var(--jp-ui-font-color2);
+}
+
+/* The code itself, in the panel, with the same red and green Cmd+K uses in the cell. */
+#pretzelai-chat-panel .chat-approval-diff {
+  border: 1px solid var(--jp-border-color2);
+  border-radius: 4px;
+  background: var(--jp-layout-color0);
+  max-height: 280px;
+  overflow: auto;
+  margin-bottom: 8px;
+}
+
+#pretzelai-chat-panel .chat-approval-diff .cm-editor {
+  font-size: var(--jp-code-font-size, 12px);
+}
+
+#pretzelai-chat-panel .chat-approval-diff .cm-focused {
+  outline: none;
+}
+
 #pretzelai-chat-panel .chat-approval-buttons {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+/* Quieter than the four choices above it: it changes what happens from now on, not just this time. */
+#pretzelai-chat-panel .chat-approval-always {
+  margin-top: 8px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--jp-ui-font-color2);
+  font-size: 0.75rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+#pretzelai-chat-panel .chat-approval-note {
+  margin: 8px 0 0 0;
+  font-size: 0.72rem;
+  color: var(--jp-ui-font-color2);
+}
+
+#pretzelai-chat-panel .chat-approval-always:hover {
+  color: var(--jp-ui-font-color1);
+}
+
+/* A cell that would be deleted: all of it is going. */
+.pretzel-removed-code {
+  background-color: rgba(255, 0, 0, 0.12);
 }
 
 /* The in-cell fixer's offer to install what is missing, instead of rewriting the cell again. */

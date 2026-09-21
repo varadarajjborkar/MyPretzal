@@ -32,6 +32,10 @@ interface IAgentButtonProps {
   /** False when the chosen model can't use tools; the button then explains instead of turning on. */
   supported: boolean;
   unsupportedReason?: string;
+  /** Whether this folder is currently on "always allow", and which folder that is. */
+  alwaysAllowed: boolean;
+  folder: string;
+  onClearAlways: () => void;
   onChange: (change: { tools?: Partial<IAgentTools>; approval?: AgentApproval }) => void;
   onClosed: () => void;
 }
@@ -48,6 +52,9 @@ export function AgentButton({
   approval,
   supported,
   unsupportedReason,
+  alwaysAllowed,
+  folder,
+  onClearAlways,
   onChange,
   onClosed
 }: IAgentButtonProps): JSX.Element {
@@ -149,6 +156,18 @@ export function AgentButton({
         <MenuItem disabled sx={{ ...itemSx, fontSize: '0.75rem', opacity: 0.75 }}>
           Installing a package always asks first, whatever is chosen here.
         </MenuItem>
+        {alwaysAllowed && (
+          <MenuItem
+            onClick={() => {
+              setAnchor(null);
+              onClearAlways();
+            }}
+            sx={itemSx}
+          >
+            {tick(false)}
+            Stop always allowing in {folder}
+          </MenuItem>
+        )}
       </Menu>
     </>
   );

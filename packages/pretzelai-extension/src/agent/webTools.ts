@@ -13,6 +13,26 @@ import { ServerConnection } from '@jupyterlab/services';
  * A tool the chat agent can use. `run` returns the text handed back to the model, so it should
  * be readable on its own: the model sees nothing else about what happened.
  */
+/**
+ * What a call would do, shown to the user before it happens.
+ *
+ * "Allow this?" with nothing to look at is not a question anyone can answer. For anything that
+ * touches a cell, the user sees the code itself — old against new, in the same red and green the
+ * in-cell assistant uses.
+ */
+export interface IToolPreview {
+  /** Which cell this is about, in words: "Cell 3", "A new cell at the end". */
+  where: string;
+  /** The cell as it stands. Empty when the cell is being created. */
+  before: string;
+  /** The cell as it would be. Empty when the cell is being deleted. */
+  after: string;
+  /** The cell this refers to, so it can be run or scrolled to. */
+  index?: number;
+  /** Whether running it straight after accepting makes sense. */
+  runnable?: boolean;
+}
+
 export interface IAgentTool {
   name: string;
   description: string;
@@ -34,6 +54,8 @@ export interface IAgentTool {
   alwaysAskFor?: (args: any) => boolean;
   /** Short line describing this call, shown in the chat while it runs. */
   label: (args: any) => string;
+  /** The change this call would make, for the user to look at before allowing it. */
+  preview?: (args: any) => IToolPreview | null;
   run: (args: any, signal?: AbortSignal) => Promise<string>;
 }
 
