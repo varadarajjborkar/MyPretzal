@@ -1014,6 +1014,18 @@ body.jp-mod-dark .cm-editor.cm-merge-b .cm-changedText {
   outline: none;
 }
 
+/* The same code as plain text, for the rare case where the editor will not start. It wraps
+   rather than stretches: a fallback that pushes the panel wider is its own kind of failure. */
+#pretzelai-chat-panel .chat-approval-plain {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: var(--jp-code-font-size, 12px);
+  font-family: var(--jp-code-font-family);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+}
+
 #pretzelai-chat-panel .chat-approval-buttons {
   display: flex;
   flex-wrap: wrap;

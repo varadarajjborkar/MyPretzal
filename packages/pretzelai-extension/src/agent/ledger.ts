@@ -39,19 +39,46 @@ const STORE = 'pretzel-agent-ledger:';
 
 const memory = new Map<string, ILedgerEntry[]>();
 
+const KINDS: LedgerKind[] = ['install', 'edit', 'insert', 'delete', 'run', 'check', 'note'];
+const OUTCOMES: LedgerOutcome[] = ['ok', 'failed', 'declined', 'skipped'];
+
+/**
+ * Make an entry out of whatever was stored, or nothing.
+ *
+ * What comes back from localStorage was written by some other version of this code, or by a
+ * half-finished write, or by nobody at all. A stored line the reader does not recognise must
+ * cost the user a line of history, never the ability to send their next message.
+ */
+const clean = (value: any): ILedgerEntry | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+  const kind = KINDS.includes(value.kind) ? (value.kind as LedgerKind) : null;
+  if (!kind || typeof value.what !== 'string' || !value.what) {
+    return null;
+  }
+  return {
+    at: Number.isFinite(value.at) ? value.at : Date.now(),
+    kind,
+    what: value.what,
+    outcome: OUTCOMES.includes(value.outcome) ? (value.outcome as LedgerOutcome) : 'ok',
+    detail: typeof value.detail === 'string' ? value.detail : undefined
+  };
+};
+
 const load = (notebook: string): ILedgerEntry[] => {
   const held = memory.get(notebook);
   if (held) {
     return held;
   }
-  let saved: ILedgerEntry[] = [];
+  let saved: any = [];
   try {
     saved = JSON.parse(localStorage.getItem(STORE + notebook) || '[]');
   } catch {
     // A browser that will not remember just starts the history here
     saved = [];
   }
-  const entries = Array.isArray(saved) ? saved : [];
+  const entries = (Array.isArray(saved) ? saved : []).map(clean).filter((e): e is ILedgerEntry => e !== null);
   memory.set(notebook, entries);
   return entries;
 };
@@ -70,8 +97,12 @@ export function record(notebook: string, entry: Omit<ILedgerEntry, 'at'>): void 
   if (!notebook) {
     return;
   }
+  const written = clean({ ...entry, at: Date.now() });
+  if (!written) {
+    return;
+  }
   const entries = load(notebook);
-  entries.push({ ...entry, at: Date.now() });
+  entries.push(written);
   save(notebook, entries.slice(-KEEP));
 }
 
@@ -90,7 +121,11 @@ export function clearHistory(notebook: string): void {
 
 /** The packages this notebook has already had installed successfully. */
 export const installedEarlier = (notebook: string): string[] => [
-  ...new Set(history(notebook).filter(e => e.kind === 'install' && e.outcome === 'ok').map(e => e.what))
+  ...new Set(
+    history(notebook)
+      .filter(e => e.kind === 'install' && e.outcome === 'ok')
+      .map(e => e.what)
+  )
 ];
 
 const ago = (at: number): string => {
@@ -132,10 +167,15 @@ export function ledgerNote(notebook: string): string {
   }
   const lines = entries
     .slice(-14)
-    .map(e => `- ${ago(e.at)}: ${said[e.kind](e)}${ending[e.outcome]}${e.detail ? ` (${e.detail})` : ''}`);
+    .map(
+      e =>
+        `- ${ago(e.at)}: ${(said[e.kind] ?? said.note)(e)}${ending[e.outcome] ?? ''}${e.detail ? ` (${e.detail})` : ''}`
+    );
   const done = installedEarlier(notebook);
   const installs = done.length
-    ? `\nAlready installed during this work, so do NOT offer to install ${done.length === 1 ? 'it' : 'them'} again: ${done.join(', ')}. ` +
+    ? `\nAlready installed during this work, so do NOT offer to install ${
+        done.length === 1 ? 'it' : 'them'
+      } again: ${done.join(', ')}. ` +
       'If something still will not import, the problem is not that it is missing — check it and say what you find.'
     : '';
   return `*WHAT YOU HAVE ALREADY DONE HERE*\n${lines.join('\n')}${installs}\n*END OF WHAT YOU HAVE DONE*`;

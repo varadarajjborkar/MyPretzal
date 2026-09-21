@@ -57,10 +57,23 @@ export function ApprovalCard({ label, preview, folder, canAlwaysAllow, onChoose 
     if (changed && preview.before) {
       extensions.push(unifiedMergeView({ original: preview.before, mergeControls: false, gutter: false }));
     }
-    const editor = new EditorView({
-      state: EditorState.create({ doc: preview.after || preview.before, extensions }),
-      parent: host.current
-    });
+    let editor: EditorView;
+    try {
+      editor = new EditorView({
+        state: EditorState.create({ doc: preview.after || preview.before, extensions }),
+        parent: host.current
+      });
+    } catch {
+      // The editor failing to start must not take the buttons with it: the user still has to be
+      // able to read this change and answer yes or no, even as plain text.
+      const plain = document.createElement('pre');
+      plain.className = 'chat-approval-plain';
+      plain.textContent = preview.after || preview.before;
+      host.current.appendChild(plain);
+      return () => {
+        plain.remove();
+      };
+    }
     if (!preview.before) {
       editor.dom.classList.add('pretzel-new-code-generation');
     }
