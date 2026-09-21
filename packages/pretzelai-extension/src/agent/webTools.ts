@@ -56,6 +56,14 @@ export interface IAgentTool {
   label: (args: any) => string;
   /** The change this call would make, for the user to look at before allowing it. */
   preview?: (args: any) => IToolPreview | null;
+  /**
+   * Check, before anyone is asked for permission, whether this call has anything left to do.
+   *
+   * Returning a string means "nothing to do, and here is what to tell the model instead". It is
+   * what stops the user being asked to approve installing a package that is already installed —
+   * a question that costs them a click, a wait, and their confidence in the answer.
+   */
+  prepare?: (args: any) => Promise<string | null>;
   run: (args: any, signal?: AbortSignal) => Promise<string>;
 }
 

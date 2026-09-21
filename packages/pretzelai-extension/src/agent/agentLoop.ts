@@ -149,6 +149,20 @@ export async function runOllamaAgent(options: IRunAgentOptions): Promise<void> {
       const step: IAgentStep = { id: ++stepId, tool: tool.name, label: tool.label(args), status: 'running' };
       onStep(step);
 
+      // Asked and answered: a call with nothing left to do is reported, not put to the user
+      let settled: string | null = null;
+      try {
+        settled = tool.prepare ? await tool.prepare(args) : null;
+      } catch {
+        settled = null;
+      }
+      if (settled) {
+        onStep({ ...step, status: 'done', detail: settled });
+        /* eslint-disable-next-line camelcase */
+        conversation.push({ role: 'tool', tool_name: tool.name, content: settled });
+        continue;
+      }
+
       if (approve && !(await approve(tool, args))) {
         onStep({ ...step, status: 'skipped' });
         conversation.push({

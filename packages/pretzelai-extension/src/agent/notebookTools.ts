@@ -8,6 +8,7 @@
  */
 import { ICodeCellModel } from '@jupyterlab/cells';
 import { INotebookTracker, NotebookActions, NotebookPanel } from '@jupyterlab/notebook';
+import { record } from './ledger';
 import { IAgentTool } from './webTools';
 
 /**
@@ -187,6 +188,8 @@ const stateNotes = (panel: NotebookPanel): string[] => {
 };
 
 export interface INotebookToolOptions {
+  /** Which notebook's history these actions belong to. */
+  notebook?: string;
   tracker: INotebookTracker | null;
   /** How long to wait for one cell before reporting back that it is still going. */
   runTimeoutMs?: number;
@@ -218,7 +221,14 @@ export async function runCellNow(tracker: INotebookTracker | null, index: number
   await NotebookActions.run(panel.content, panel.sessionContext);
 }
 
-export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INotebookToolOptions): IAgentTool[] {
+export function createNotebookTools({
+  tracker,
+  runTimeoutMs = 120000,
+  notebook
+}: INotebookToolOptions): IAgentTool[] {
+  // So that "what have you done to my notebook?" has an answer next time round
+  const noteDone = (kind: 'edit' | 'insert' | 'delete' | 'run', what: string, detail?: string) =>
+    record(notebook ?? '', { kind, what, outcome: 'ok', detail });
   const overview: IAgentTool = {
     name: 'notebook_overview',
     risk: 'read',
@@ -323,6 +333,7 @@ export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INoteboo
       const cell = cellAt(panel, args?.index);
       const before = cell.model.sharedModel.source;
       cell.model.sharedModel.setSource(String(args?.source ?? ''));
+      noteDone('edit', `cell ${args?.index}`);
       panel.content.activeCellIndex = Number(args.index);
       const ran =
         cell.model.type === 'code' && (cell.model as ICodeCellModel).executionCount !== null && before.trim() !== '';
@@ -388,6 +399,7 @@ export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INoteboo
         metadata: type === 'code' ? { trusted: true } : {}
       });
       panel.content.activeCellIndex = position;
+      noteDone('insert', `a ${type} cell at ${position}`);
       return `Added a ${type} cell at ${position}. The notebook now has ${panel.content.widgets.length} cells, and everything below ${position} has shifted down by one.`;
     }
   };
@@ -425,6 +437,7 @@ export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INoteboo
         throw new Error('That notebook has no model, so it cannot be changed.');
       }
       panel.model.sharedModel.deleteCell(Number(args.index));
+      noteDone('delete', `cell ${args?.index}`);
       return (
         `Deleted cell ${args.index}. The notebook now has ${panel.content.widgets.length} cells and the ones below have moved up by one.` +
         (wasRun
@@ -520,8 +533,15 @@ export function createNotebookTools({ tracker, runTimeoutMs = 120000 }: INoteboo
       const code = cell.model as ICodeCellModel;
       const { text, error } = outputsOf(code);
       if (error) {
+        record(notebook ?? '', {
+          kind: 'run',
+          what: `cell ${args?.index}`,
+          outcome: 'failed',
+          detail: error.split('\n').slice(-1)[0].slice(0, 120)
+        });
         return `Cell ${args.index} ran as [${code.executionCount}] and FAILED:\n${clip(error, MAX_OUTPUT_CHARS)}`;
       }
+      noteDone('run', `cell ${args?.index}`);
       return (
         `Cell ${args.index} ran as [${code.executionCount}] without error.` +
         (text ? `\nOutput:\n${clip(text, MAX_OUTPUT_CHARS)}` : ' It produced no output.')

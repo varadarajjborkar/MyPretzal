@@ -10,6 +10,7 @@ import { INotebookTracker } from '@jupyterlab/notebook';
 import { IAgentTool } from './webTools';
 import { ENV_PROBE, INSTALL_PROBE, unsafeRequirement } from './envProbe';
 import { libraryMentions } from './mentions';
+import { record } from './ledger';
 import { requirementFor } from './missingModule';
 import { kernelProblem, runInKernel, runInKernelForJson } from './kernel';
 
@@ -124,10 +125,37 @@ const describePackage = (
  * Shared by the chat's install tool and the error fixer's install button, so a package installed
  * from either place lands in the same environment and reports the same way.
  */
+/** Installs happening right now, so the same one is not started twice. */
+const running = new Set<string>();
+
 export async function installPackages(
   tracker: INotebookTracker | null,
   names: string[]
 ): Promise<{ ok: boolean; message: string }> {
+  // "install sklearn" installs a stub that exists only to tell you to install scikit-learn.
+  // The model often asks by the name it imports, so the name it imports is translated here.
+  const corrections: string[] = [];
+  names = names.map(name => {
+    if (/[<>=!~[]/.test(name)) {
+      return name;
+    }
+    const { requirement } = requirementFor(name.trim());
+    if (requirement !== name.trim()) {
+      corrections.push(`${name} → ${requirement}`);
+      return requirement;
+    }
+    return name;
+  });
+
+  const key = names.join(' ');
+  if (running.has(key)) {
+    return {
+      ok: false,
+      message:
+        `An install of ${names.join(', ')} is already running from an earlier step. Wait for it rather than ` +
+        'starting it again — two pips in the same environment at once corrupt each other.'
+    };
+  }
   const rejected = names.filter(unsafeRequirement);
   if (rejected.length) {
     return {
@@ -141,18 +169,25 @@ export async function installPackages(
 
   const source = JSON.stringify(INSTALL_PROBE.replace('__NAMES__', JSON.stringify(names)));
   const code = `exec(compile(${source}, '<pretzel-install>', 'exec'), {})`;
-  // pip over a slow connection is not stuck, it is downloading; five minutes is a fair wait
-  const result = await runInKernelForJson(tracker, code, 300000);
+  running.add(key);
+  let result: any;
+  try {
+    // pip over a slow connection is not stuck, it is downloading; five minutes is a fair wait
+    result = await runInKernelForJson(tracker, code, 300000);
+  } finally {
+    running.delete(key);
+  }
+  const noted = corrections.length ? `\n(Asked for ${corrections.join(', ')}, which is the package that provides it.)` : '';
   if (result.code !== 0) {
     const detail = (result.err || result.out || '').trim().split('\n').slice(-6).join('\n');
-    return { ok: false, message: `pip could not install ${names.join(', ')}:\n${detail}` };
+    return { ok: false, message: `pip could not install ${names.join(', ')}:\n${detail}${noted}` };
   }
   forgetEnvironment();
   const tail = (result.out || '').trim().split('\n').slice(-3).join('\n');
   return {
     ok: true,
     message:
-      `Installed ${names.join(', ')}.\n${tail}\n\n` +
+      `Installed ${names.join(', ')}.${noted}\n${tail}\n\n` +
       'Anything already imported in this kernel is still the old version. If this package was ' +
       'imported before now, the kernel has to be restarted before the change takes effect — ' +
       'say that rather than assuming it worked.'
@@ -163,9 +198,33 @@ export interface IEnvToolOptions {
   tracker: INotebookTracker | null;
   /** Told when an install finished, so the chat can say the kernel needs restarting. */
   onInstalled?: (names: string[]) => void;
+  /** Which notebook's history to write to. */
+  notebook?: string;
 }
 
-export function createEnvTools({ tracker, onInstalled }: IEnvToolOptions): IAgentTool[] {
+/** The import name to look for when someone asks to install a requirement string. */
+export const moduleForRequirement = (requirement: string): string => {
+  const name = requirement
+    .trim()
+    .split(/[[<>=!~,;]/)[0]
+    .trim();
+  const known: Record<string, string> = {
+    'opencv-python': 'cv2',
+    'opencv-contrib-python': 'cv2',
+    'scikit-learn': 'sklearn',
+    'scikit-image': 'skimage',
+    pillow: 'PIL',
+    beautifulsoup4: 'bs4',
+    pyyaml: 'yaml',
+    'python-dateutil': 'dateutil',
+    'python-dotenv': 'dotenv',
+    pymupdf: 'fitz',
+    setuptools: 'pkg_resources'
+  };
+  return known[name.toLowerCase()] ?? name.replace(/-/g, '_');
+};
+
+export function createEnvTools({ tracker, onInstalled, notebook }: IEnvToolOptions): IAgentTool[] {
   const checkEnvironment: IAgentTool = {
     name: 'check_environment',
     risk: 'read',
@@ -248,6 +307,47 @@ export function createEnvTools({ tracker, onInstalled }: IEnvToolOptions): IAgen
       const reason = args?.reason ? ` — ${args.reason}` : '';
       return `Installing ${names.join(', ') || 'a package'}${reason}`;
     },
+    /**
+     * Look before asking.
+     *
+     * Installing something that is already installed costs the user a decision, a wait, and
+     * their trust in the next question. Asking twice for the same package — which is what
+     * happens when the model forgets what it did ten minutes ago — is worse.
+     */
+    prepare: async args => {
+      const names: string[] = (Array.isArray(args?.packages) ? args.packages : [])
+        .map((n: any) => String(n).trim())
+        .filter(Boolean)
+        .slice(0, 12);
+      if (!names.length) {
+        return 'No packages were given, so there was nothing to install.';
+      }
+      // A pinned requirement is a real request even when the package is present: "setuptools<81"
+      // is asking for a different version, not for setuptools.
+      if (names.some(name => /[<>=!~]/.test(name))) {
+        return null;
+      }
+      let present: string[] = [];
+      try {
+        const report = await readEnvironment(tracker, names.map(moduleForRequirement));
+        present = names.filter(name => {
+          const entry = report.packages?.[moduleForRequirement(name)];
+          return !!entry && (entry.importable || !!entry.version);
+        });
+      } catch {
+        return null;
+      }
+      if (present.length < names.length) {
+        return null;
+      }
+      record(notebook ?? '', { kind: 'install', what: names.join(', '), outcome: 'skipped' });
+      return (
+        `Nothing to install: ${names.join(', ')} ${names.length === 1 ? 'is' : 'are'} already installed in this ` +
+        'kernel — this was checked just now, not remembered. Carry on and use it. If code using it still ' +
+        'fails, the failure is something else and installing again will not change it; read the error and ' +
+        'say what it actually says.'
+      );
+    },
     run: async args => {
       const names: string[] = (Array.isArray(args?.packages) ? args.packages : [])
         .map((n: any) => String(n).trim())
@@ -257,6 +357,12 @@ export function createEnvTools({ tracker, onInstalled }: IEnvToolOptions): IAgen
         return 'No packages were given, so nothing was installed.';
       }
       const outcome = await installPackages(tracker, names);
+      record(notebook ?? '', {
+        kind: 'install',
+        what: names.join(', '),
+        outcome: outcome.ok ? 'ok' : 'failed',
+        detail: outcome.ok ? undefined : outcome.message.split('\n').slice(-1)[0].slice(0, 120)
+      });
       if (outcome.ok) {
         onInstalled?.(names);
       }
@@ -343,8 +449,14 @@ export async function missingImports(tracker: INotebookTracker | null, names: st
  * Nothing is reported for a library nobody mentioned, and nothing at all when the question names
  * no library — which is most questions, and costs nothing.
  */
-export async function mentionNote(tracker: INotebookTracker | null, text: string): Promise<string> {
-  const names = libraryMentions(text);
+export async function mentionNote(
+  tracker: INotebookTracker | null,
+  text: string,
+  alsoCheck: string[] = []
+): Promise<string> {
+  // Whatever this message names, plus whatever the conversation has been about: a follow-up
+  // like "try again" names nothing, and that is exactly when a stale belief does the damage.
+  const names = [...new Set([...libraryMentions(text), ...alsoCheck])].slice(0, 8);
   if (!names.length || kernelProblem(tracker)) {
     return '';
   }

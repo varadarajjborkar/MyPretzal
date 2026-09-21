@@ -59,11 +59,15 @@ The **Tools** button at the bottom of the chat decides what the AI may reach for
 - *Ask before it changes anything* **(default)** — it reads freely, but editing a cell, running code or installing waits for you.
 - *Ask before every step* — every call waits.
 
+While it works, the steps appear in the panel as a list — done, skipped, failed — **next to** the question it is asking, so you approve a change with the rest of the work still in view.
+
 When it does ask, **you see the code first**: the cell as it is against the cell as it would be, in the same red and green Cmd+K uses, with **Accept**, **Accept and run**, **Reject** and **Edit prompt** underneath. *Edit prompt* stops the run and puts your message back in the box, which is usually quicker than arguing with a wrong change.
 
 **Always allow in \<folder\>** on that card stops the asking for changes while you work in that folder — and nowhere else. Turn it off again from the Tools menu. Installing a package is never covered by it, and neither is running a cell that installs one: *Running cell 1 — it installs packages* asks even on *Let it run*.
 
-**Installing a package always asks**, whichever of those you pick, because it changes your machine outside the notebook.
+**Installing a package always asks**, whichever of those you pick, because it changes your machine outside the notebook. But it checks first: if the package is already installed you are not asked at all, and the AI is told it was checked *just now* rather than being left to remember. Asking to install `sklearn` installs `scikit-learn`, and a second install of the same thing while the first is still running is refused instead of run.
+
+**It remembers what it has done here.** Every install, edit, insert, deletion, run and refusal is kept against that notebook — through a page reload — and put in front of the model on the next message, so it stops offering to install what it installed ten minutes ago. A library that has come up once keeps being checked for the rest of the conversation, so *"give me that code again"* is answered with the same ground truth as the message that named it. The count at the bottom of the panel (*"3 actions here"*) opens the list, and **Forget it** clears it.
 
 It needs an Ollama model that can call tools, such as `gpt-oss` or `qwen3`. With a model that can't, the chat quietly answers without them and the Tools menu says which model it was. Other providers aren't wired up yet.
 

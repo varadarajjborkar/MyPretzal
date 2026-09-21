@@ -39,6 +39,8 @@ import { createEnvTools, environmentContext, forgetEnvironment, mentionNote } fr
 import { ApprovalCard, ApprovalChoice } from './components/ApprovalCard';
 import { IToolPreview } from './agent/webTools';
 import { runCellNow } from './agent/notebookTools';
+import { clearHistory, history, ledgerNote, record } from './agent/ledger';
+import { libraryMentions } from './agent/mentions';
 import { DISPLAY_GUIDANCE, ENVIRONMENT_GUIDANCE, NOTEBOOK_STATE_GUIDANCE, OBEDIENCE_GUIDANCE } from './agent/guidance';
 import { AgentApproval, AgentButton, IAgentTools } from './components/AgentButton';
 import { ChatModelPicker } from './components/ChatModelPicker';
@@ -487,6 +489,26 @@ export function Chat({
   } | null>(null);
   // Set when the user chooses "Accept and run", and acted on once the tool has finished
   const runAfterRef = useRef<number | null>(null);
+  // Bumped whenever something is written to the notebook's history, so the panel redraws it
+  const [ledgerTick, setLedgerTick] = useState(0);
+  const [showHistory, setShowHistory] = useState(false);
+  /**
+   * The steps of the run happening now.
+   *
+   * Shown next to the approval card rather than instead of it, so "may I rewrite cell 3?" is
+   * read with the rest of the work visible: what it has done so far, and what it is in the
+   * middle of. An approval with no context is a question with half the sentence missing.
+   */
+  const [runSteps, setRunSteps] = useState<{ id: number; label: string; status: string }[]>([]);
+  /**
+   * Libraries this conversation has been about.
+   *
+   * "Give me that code again" names nothing, so a check that only reads the latest message finds
+   * nothing to check and the model falls back on what it believed ten minutes ago — which is how
+   * it ends up offering to install a package it has already installed. Once a library has come
+   * up, it keeps being checked for the rest of the conversation.
+   */
+  const discussedRef = useRef<Set<string>>(new Set());
 
   /**
    * The folder whose settings these are.
@@ -494,6 +516,9 @@ export function Chat({
    * "Always allow" is a decision about the work in front of you, not about every notebook you
    * will ever open, so it is remembered against the folder the notebook is in and nowhere else.
    */
+  /** The notebook these actions and this history belong to. */
+  const notebookPath = (): string => notebookTracker?.currentWidget?.context?.path ?? '';
+
   const notebookFolder = (): string => {
     const path = notebookTracker?.currentWidget?.context?.path ?? '';
     const folder = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '';
@@ -577,10 +602,18 @@ export function Chat({
   /** The tools the AI may reach for right now, following the menu next to the send button. */
   const toolsForRun = () => {
     const choice = agentToolsRef.current;
+    const notebook = notebookPath();
     return [
-      ...(choice.notebook ? createNotebookTools({ tracker: notebookTracker }) : []),
+      ...(choice.notebook ? createNotebookTools({ tracker: notebookTracker, notebook }) : []),
       ...(choice.environment
-        ? createEnvTools({ tracker: notebookTracker, onInstalled: () => forgetEnvironment() })
+        ? createEnvTools({
+            tracker: notebookTracker,
+            notebook,
+            onInstalled: () => {
+              forgetEnvironment();
+              setLedgerTick(tick => tick + 1);
+            }
+          })
         : []),
       ...(choice.web ? webTools : [])
     ];
@@ -591,8 +624,20 @@ export function Chat({
     const choice = agentToolsRef.current;
     // Before anything general: what the question itself names, looked up in this kernel. It is
     // the most specific thing we know, and a long system message is read from the top.
-    const mentioned = choice.environment ? await mentionNote(notebookTracker, userText) : '';
-    const parts = [TOOL_GUIDANCE, OBEDIENCE_GUIDANCE, ...(mentioned ? [mentioned] : [])];
+    for (const name of libraryMentions(userText)) {
+      discussedRef.current.add(name);
+    }
+    const mentioned = choice.environment
+      ? await mentionNote(notebookTracker, userText, [...discussedRef.current])
+      : '';
+    // What it has already done here, so it stops offering to do it a second time
+    const already = ledgerNote(notebookPath());
+    const parts = [
+      TOOL_GUIDANCE,
+      OBEDIENCE_GUIDANCE,
+      ...(already ? [already] : []),
+      ...(mentioned ? [mentioned] : [])
+    ];
     if (choice.notebook) {
       parts.push(NOTEBOOK_STATE_GUIDANCE);
     }
@@ -638,6 +683,7 @@ export function Chat({
     selectedCode: string
   ) => {
     const connection = { mode: ollamaMode || 'local', baseUrl: ollamaBaseUrl || '', apiKey: ollamaApiKey || '' };
+    setRunSteps([]);
 
     // The same notebook context the normal chat adds, so answers still know about your cells
     const lastMessage = formattedMessages[formattedMessages.length - 1];
@@ -669,9 +715,16 @@ export function Chat({
         onText: renderChat,
         onStep: step => {
           setAgentStatus(step.status === 'running' ? step.label : '');
+          setRunSteps(current => {
+            const rest = current.filter(entry => entry.id !== step.id);
+            return [...rest, { id: step.id, label: step.label, status: step.status }].slice(-8);
+          });
           const line = agentStepLine(step);
           if (line) {
             renderChat(line);
+          }
+          if (step.status === 'done' || step.status === 'error') {
+            setLedgerTick(tick => tick + 1);
           }
           // "Accept and run" waits for the edit to be in the cell before running it
           if (step.status === 'done' && runAfterRef.current !== null) {
@@ -1005,6 +1058,10 @@ export function Chat({
       cancelGeneration();
       editorRef.current?.focus();
       return;
+    }
+    if (choice === 'reject') {
+      record(notebookPath(), { kind: 'note', what: pending.label, outcome: 'declined' });
+      setLedgerTick(tick => tick + 1);
     }
     pending.resolve(choice === 'accept');
   };
@@ -1475,6 +1532,25 @@ export function Chat({
                 </button>
                 <span className="chat-working-status">{agentStatus || 'Generating AI response...'}</span>
               </div>
+              {runSteps.length > 0 && (
+                // The work so far, next to the question being asked about it
+                <ul className="chat-steps">
+                  {runSteps.map(step => (
+                    <li key={step.id} className={`chat-step chat-step-${step.status}`}>
+                      <span className="chat-step-mark">
+                        {step.status === 'done'
+                          ? '✓'
+                          : step.status === 'error'
+                          ? '✕'
+                          : step.status === 'skipped'
+                          ? '–'
+                          : '…'}
+                      </span>
+                      {step.label}
+                    </li>
+                  ))}
+                </ul>
+              )}
               {pendingApproval && (
                 // The whole request is shown, not just "a tool": the answer to "may I run cell 4"
                 // and to "may I install gymnasium" should never be given to the wrong question.
@@ -1489,6 +1565,45 @@ export function Chat({
             </div>
           ) : (
             <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-start' }}>
+              {(() => {
+                // What has already been done to this notebook, so "did you install that?" has an
+                // answer you can read yourself instead of asking the model to remember.
+                const done = ledgerTick >= 0 ? history(notebookPath()) : [];
+                if (!done.length) {
+                  return null;
+                }
+                return (
+                  <div className="chat-ledger">
+                    <button className="chat-ledger-toggle" onClick={() => setShowHistory(open => !open)}>
+                      {showHistory ? '▾' : '▸'} {done.length} action{done.length === 1 ? '' : 's'} here
+                    </button>
+                    {showHistory && (
+                      <>
+                        <ul className="chat-ledger-list">
+                          {done
+                            .slice(-8)
+                            .reverse()
+                            .map((entry, index) => (
+                              <li key={index} className={`chat-ledger-${entry.outcome}`}>
+                                {entry.kind === 'note' ? entry.what : `${entry.kind} ${entry.what}`}
+                                {entry.outcome !== 'ok' ? ` — ${entry.outcome}` : ''}
+                              </li>
+                            ))}
+                        </ul>
+                        <button
+                          className="chat-ledger-toggle"
+                          onClick={() => {
+                            clearHistory(notebookPath());
+                            setLedgerTick(tick => tick + 1);
+                          }}
+                        >
+                          Forget it
+                        </button>
+                      </>
+                    )}
+                  </div>
+                );
+              })()}
               <div className="submit-button-container">
                 <button className="pretzelInputSubmitButton" onClick={() => onSend(editorValue)} title="Submit ↵">
                   Submit <span style={{ fontSize: '0.8em' }}>↵</span>
